@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -87,30 +88,6 @@ def source_text(master: dict) -> str:
 # Commands whose ARGUMENT is layout, not content. Dropping the command alone
 # leaves "0.4in" and "-1.25em" behind, and the gate then reports 0.4 and 1.25
 # as invented numbers.
-# An ALLOWLIST, so a layout command not named here leaks its argument into the
-# checked text as a claim — `\pagestyle{empty}` reported "empty" as a term lost
-# in extraction. Add to it when the template gains a command.
-_LAYOUT_CMD = re.compile(
-    r"\\(?:vspace|hspace|itemsep|documentclass|usepackage|geometry|pagestyle"
-    r"|setlength|renewcommand|newcommand|hfill|linespread)\*?"
-    r"(?:\[[^\]]*\])?(?:\{[^}]*\})?"
-)
-_DIMENSION = re.compile(r"-?\d+(?:\.\d+)?\s*(?:in|em|ex|pt|cm|mm)\b")
-_ESCAPED = {r"\%": "%", r"\&": "&", r"\$": "$", r"\#": "#", r"\_": "_"}
-
-
-def strip_tex(tex: str) -> str:
-    """Rendered .tex back to prose, so the template is not read as claims."""
-    out = re.sub(r"\\href\{[^}]*\}\{([^}]*)\}", r"\1", tex)
-    out = _LAYOUT_CMD.sub(" ", out)
-    out = re.sub(r"\\begin\{[^}]*\}|\\end\{[^}]*\}", " ", out)
-    for a, b in _ESCAPED.items():          # "12\%" would otherwise yield "12"
-        out = out.replace(a, b)
-    out = re.sub(r"\\[a-zA-Z]+\*?", " ", out)
-    out = out.replace("{", " ").replace("}", " ").replace("$", " ")
-    return _DIMENSION.sub(" ", out)
-
-
 # Words the RENDERER emits: section headings, month names, link furniture.
 # They are the template's vocabulary, not claims about the candidate, so they
 # are exempt. Nothing here is a skill, an employer or a number.
@@ -176,21 +153,48 @@ def flatten_skills(skills: dict, drop: set, jd: str = "") -> list[str]:
     return [label for _, label in skill_labels(skills, drop, jd)]
 
 
-def render(master: dict, profile: dict, jd: str = "") -> str:
+@dataclass
+class Rendered:
+    """The document in two forms, built in one pass so they cannot drift.
+
+    `tex` is for the compiler. `content` is every human-visible string that
+    went into it, collected as it was escaped — and that is what the fact gate
+    and the extraction check read.
+
+    Checking the .tex instead meant stripping LaTeX back to prose, where a
+    command's argument is either content (`\textbf{Python}`) or a layout
+    parameter (`\pagestyle{empty}`) with nothing to tell them apart but a
+    hand-maintained list of commands. An unlisted one leaked its argument as a
+    claim. Collecting content where it is escaped removes the distinction: a
+    layout parameter is never escaped, so it can never appear.
+    """
+    tex: str
+    content: str
+
+
+def render(master: dict, profile: dict, jd: str = "") -> Rendered:
     sections = profile.get("sections") or []
     drop = set(profile.get("drop") or [])
     emphasis = [e.lower() for e in (profile.get("emphasis") or [])]
     ident = master["identity"]
-    L = []
+    L: list[str] = []
+    seen: list[str] = []
+
+    def t(value) -> str:
+        """Escape for LaTeX and record the plain string as document content."""
+        plain = " ".join(str(value).split())
+        if plain:
+            seen.append(plain)
+        return tex(plain)
 
     L.append(r"\documentclass{resume}")
     L.append(r"\usepackage[left=0.4in,top=0.4in,right=0.4in,bottom=0.4in]{geometry}")
-    L.append(rf"\name{{{tex(ident['name'])}}}")
-    L.append(rf"\address{{{tex(ident['phone'])} \\ {tex(ident['location'])}}}")
+    L.append(rf"\name{{{t(ident['name'])}}}")
+    L.append(rf"\address{{{t(ident['phone'])} \\ {t(ident['location'])}}}")
     L.append(
-        rf"\address{{\href{{mailto:{ident['email']}}}{{{tex(ident['email'])}}} \\ "
-        rf"\href{{{ident['linkedin']}}}{{{tex(link_label(ident['linkedin']))}}} \\ "
-        rf"\href{{{ident['github']}}}{{{tex(link_label(ident['github']))}}}}}"
+        rf"\address{{\href{{mailto:{ident['email']}}}{{{t(ident['email'])}}} \\ "
+        rf"\href{{{ident['linkedin']}}}{{{t(link_label(ident['linkedin']))}}} \\ "
+        rf"\href{{{ident['github']}}}{{{t(link_label(ident['github']))}}}}}"
     )
     L.append(r"\begin{document}")
 
@@ -200,9 +204,9 @@ def render(master: dict, profile: dict, jd: str = "") -> str:
         # master does not hold, so the fact gate stays satisfiable (D44).
         if emphasis:
             names.sort(key=lambda n: 0 if n.lower() in emphasis else 1)
-        body = ", ".join(tex(n) for n in names)
+        body = ", ".join(t(n) for n in names)
         if names:
-            body = r"\textbf{" + tex(names[0]) + "}, " + ", ".join(tex(n) for n in names[1:])
+            body = r"\textbf{" + t(names[0]) + "}, " + ", ".join(t(n) for n in names[1:])
         L += [r"\begin{rSection}{SKILLS}", body, r"\end{rSection}", ""]
 
     if "experience" in sections:
@@ -214,11 +218,11 @@ def render(master: dict, profile: dict, jd: str = "") -> str:
             bullets = ov.resolve(job, profile.get("bullets", {}), drop)
             if not bullets:
                 continue
-            L.append(rf"\textbf{{{tex(job['company'])}}} - {tex(job['title'])} \hfill {span}")
+            L.append(rf"\textbf{{{t(job['company'])}}} - {t(job['title'])} \hfill {span}")
             L.append(r"\begin{itemize}")
             L.append(r"\itemsep -3pt {}")
             for b in bullets:
-                L.append(rf"  \item {tex(b)}")
+                L.append(rf"  \item {t(b)}")
             L += [r"\end{itemize}", ""]
         L += [r"\end{rSection}", ""]
 
@@ -228,13 +232,13 @@ def render(master: dict, profile: dict, jd: str = "") -> str:
             if p["id"] in drop:
                 continue
             L.append(
-                rf"\textbf{{{tex(p['name'])}}} - {tex(p['tagline'])} "
+                rf"\textbf{{{t(p['name'])}}} - {t(p['tagline'])} "
                 rf"\hfill \href{{{p['url']}}}{{GitHub}}"
             )
             L.append(r"\begin{itemize}")
             L.append(r"\itemsep -3pt {}")
             for b in ov.resolve(p, profile.get("bullets", {}), drop):
-                L.append(rf"  \item {tex(b)}")
+                L.append(rf"  \item {t(b)}")
             L += [r"\end{itemize}", ""]
         L += [r"\end{rSection}", ""]
 
@@ -248,7 +252,7 @@ def render(master: dict, profile: dict, jd: str = "") -> str:
                 x for x in (e.get("result"), f"GPA {e['gpa']}" if e.get("gpa") else None) if x
             )
             rows.append(
-                rf"{{\bf {tex(e['degree'])}}}, {tex(e['institution'])} \hfill {tex(right)}"
+                rf"{{\bf {t(e['degree'])}}}, {t(e['institution'])} \hfill {t(right)}"
             )
         L += ["\\\\\n".join(rows), r"\end{rSection}", ""]
 
@@ -257,13 +261,20 @@ def render(master: dict, profile: dict, jd: str = "") -> str:
         L.append(r"\vspace{-1.25em}")
         for c in master["certifications"]:
             L.append(
-                rf"\item{{$\bullet$ {tex(c['name'])}}} "
+                rf"\item{{$\bullet$ {t(c['name'])}}} "
                 rf"{{\href{{{c['url']}}}{{Link!}}\hfill {{{month(c['date'])}}}}}"
             )
         L += [r"\end{rSection}", ""]
 
     L.append(r"\end{document}")
-    return "\n".join(L) + "\n"
+    document = "\n".join(L) + "\n"
+    # Headings are literal in the template rather than escaped, so they are
+    # recorded here; the extraction check reads section order from them.
+    for heading in ("SKILLS", "WORK EXPERIENCE", "PROJECTS", "Education",
+                    "CERTIFICATIONS"):
+        if f"{{{heading}}}" in document:
+            seen.append(heading)
+    return Rendered(tex=document + "", content=" ".join(seen))
 
 
 def page_count(pdf: Path) -> int | None:
@@ -363,7 +374,7 @@ def build(out: Path, tailoring: Path | None = None, jd: Path | None = None,
 
     out.parent.mkdir(parents=True, exist_ok=True)
     document = render(master, spec, jd_text)
-    out.write_text(document)
+    out.write_text(document.tex)
     shutil.copy(cfg.templates / "resume.cls", out.parent / "resume.cls")
     print(f"tex  -> {out}")
 
@@ -371,7 +382,7 @@ def build(out: Path, tailoring: Path | None = None, jd: Path | None = None,
     # it (D36). Human approval comes after the gate, never instead of it.
     verified = " ".join(b["text"] for b in spec.get("bullets", {}).values())
     result = factgate.verify(
-        strip_tex(document), source_text(master) + " " + verified, allow=allow
+        document.content, source_text(master) + " " + verified, allow=allow
     )
     print(result.report(spec["name"]))
     if not result.ok:
@@ -395,7 +406,7 @@ def build(out: Path, tailoring: Path | None = None, jd: Path | None = None,
     # recruiter actually runs, however prominent it looks on the page.
     try:
         ats = atscheck.check(
-            strip_tex(document), atscheck.extract(pdf),
+            document.content, atscheck.extract(pdf),
             [master["identity"].get("email"), master["identity"].get("phone")],
         )
         print(ats.report())

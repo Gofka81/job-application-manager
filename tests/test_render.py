@@ -71,29 +71,29 @@ class TestSkills:
 
 class TestDrop:
     def test_single_bullet_by_index(self, master):
-        out = render.render(master, profile(drop=["acme.1"]))
+        out = render.render(master, profile(drop=["acme.1"])).tex
         assert "Second bullet that a profile may drop" not in out
         assert "Cut costs by 12" in out
 
     def test_whole_job(self, master):
-        out = render.render(master, profile(drop=["initech"]))
+        out = render.render(master, profile(drop=["initech"])).tex
         assert "Initech" not in out
 
     def test_project_bullet_by_index(self, master):
-        out = render.render(master, profile(drop=["widget.0"]))
+        out = render.render(master, profile(drop=["widget.0"])).tex
         assert "Project bullet one" not in out
         assert "Project bullet two" in out
 
     def test_section_omitted_when_not_listed(self, master):
-        out = render.render(master, profile(sections=["experience"]))
+        out = render.render(master, profile(sections=["experience"])).tex
         assert "PROJECTS" not in out and "CERTIFICATIONS" not in out
 
 
 class TestNoFabrication:
     def test_emphasis_only_reorders_never_adds(self, master):
         """Emphasis must not introduce a skill the master lacks (D44)."""
-        plain = render.render(master, profile())
-        moved = render.render(master, profile(emphasis=["duckdb", "kubernetes"]))
+        plain = render.render(master, profile()).tex
+        moved = render.render(master, profile(emphasis=["duckdb", "kubernetes"])).tex
         assert "Kubernetes" not in moved
 
         def skills_of(doc: str) -> set[str]:
@@ -104,7 +104,7 @@ class TestNoFabrication:
         assert skills_of(plain) == skills_of(moved)
 
     def test_every_rendered_bullet_exists_in_the_master(self, master):
-        out = render.render(master, profile())
+        out = render.render(master, profile()).tex
         for job in master["experience"]:
             for b in job["bullets"]:
                 assert render.tex(b) in out
@@ -112,7 +112,7 @@ class TestNoFabrication:
 
 class TestDocumentShape:
     def test_compiles_to_a_complete_latex_document(self, master):
-        out = render.render(master, profile())
+        out = render.render(master, profile()).tex
         assert out.startswith(r"\documentclass{resume}")
         assert out.rstrip().endswith(r"\end{document}")
         assert out.count(r"\begin{itemize}") == out.count(r"\end{itemize}")
@@ -147,7 +147,7 @@ class TestIdentity:
         assert render.link_label("https://github.com/example/") == "github.com/example"
 
     def test_header_follows_the_profile(self, master):
-        out = render.render(master, profile())
+        out = render.render(master, profile()).tex
         assert "linkedin.com/in/example" in out and "github.com/example" in out
         assert "Ada Lovelace" in out
 
@@ -156,17 +156,17 @@ class TestGateWiring:
     """The gate composes with the renderer, in both directions."""
 
     def test_a_faithful_render_passes(self, master):
-        doc = render.render(master, profile())
-        r = factgate.verify(render.strip_tex(doc), render.source_text(master),
+        doc = render.render(master, profile()).content
+        r = factgate.verify(doc, render.source_text(master),
                             allow=render.TEMPLATE_WORDS)
         assert r.ok, r.report()
 
     def test_it_flags_content_the_source_lacks(self, master):
         """Proof the gate has teeth: drop a job from the source, keep it in
         the document, and its facts must be reported as invented."""
-        doc = render.render(master, profile())
+        doc = render.render(master, profile()).content
         thinner = {**master, "experience": [master["experience"][0]]}
-        r = factgate.verify(render.strip_tex(doc), render.source_text(thinner),
+        r = factgate.verify(doc, render.source_text(thinner),
                             allow=render.TEMPLATE_WORDS)
         assert not r.ok
         assert "initech" in r.invented_names
@@ -176,13 +176,37 @@ class TestGateWiring:
         # `relational_db` is a KEY; the renderer prints "Relational DB".
         assert "Relational DB" in src and "relational_db" in src
 
-    def test_layout_dimensions_are_not_numeric_claims(self):
-        stripped = render.strip_tex(r"\usepackage[left=0.4in]{geometry} \vspace{-1.25em} text")
-        assert factgate.numbers(stripped) == set()
+    def test_no_layout_parameter_can_reach_the_checked_content(self, master):
+        """The class of bug, not one instance of it.
 
-    def test_escaped_percent_keeps_its_sign(self):
-        # "12\%" left the backslash behind, so the claim read as a bare 12.
-        assert factgate.numbers(render.strip_tex(r"costs by 12\% annually")) == {"12%"}
+        Checking the rendered .tex meant telling content apart from layout by
+        a hand-maintained list of commands, and an unlisted one leaked its
+        argument as a claim. Content is now collected where it is escaped, so
+        nothing that was never escaped can appear — whatever the template
+        gains later.
+        """
+        doc = render.render(master, profile())
+        for parameter in ("empty", "0.4in", "1.25em", "geometry", "resume",
+                          "11pt", "itemize", "rSection", "article"):
+            assert parameter not in doc.content, parameter
+
+    def test_percent_signs_survive_into_the_checked_content(self, master):
+        m = {**master, "experience": [{**master["experience"][0],
+                                       "bullets": ["Cut costs by 12% annually"]}]}
+        # "12\%" in the .tex once read as a bare 12; the content keeps the sign.
+        assert "12%" in factgate.numbers(render.render(m, profile()).content)
+        assert "12" not in factgate.numbers(render.render(m, profile()).content)
+
+    def test_content_holds_exactly_what_a_reader_sees(self, master):
+        doc = render.render(master, profile())
+        assert "Ada Lovelace" in doc.content
+        assert "Cut costs by 12% and handled ~500 datasets under 50_000 rows" in doc.content
+        assert "SKILLS" in doc.content and "PROJECTS" in doc.content
+
+    def test_tex_and_content_are_built_in_one_pass(self, master):
+        """Two outputs from one walk, so they cannot drift apart."""
+        doc = render.render(master, profile(drop=["initech"]))
+        assert "Initech" not in doc.tex and "Initech" not in doc.content
 
 
 class TestAliases:

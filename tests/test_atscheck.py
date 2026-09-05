@@ -67,16 +67,17 @@ class TestCheck:
 def test_real_pdf_round_trip(tmp_path):
     master = yaml.safe_load(Path("tests/fixtures/master-min.yaml").read_text())
     out = tmp_path / "cv.tex"
-    out.write_text(render.render(master, {
+    rendered = render.render(master, {
         "name": "t", "sections": ["skills", "experience", "projects",
                                   "education", "certifications"],
         "emphasis": [], "drop": [],
-    }))
+    })
+    out.write_text(rendered.tex)
     shutil.copy("templates/resume.cls", tmp_path / "resume.cls")
     subprocess.run(["latexmk", "-pdf", "-interaction=nonstopmode",
                     f"-outdir={tmp_path}", "cv.tex"],
                    cwd=tmp_path, capture_output=True, check=True)
-    r = atscheck.check(render.strip_tex(out.read_text()),
+    r = atscheck.check(rendered.content,
                        atscheck.extract(tmp_path / "cv.pdf"),
                        ["ada@example.com"])
     assert r.ok, r.report()
