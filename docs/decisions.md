@@ -1,6 +1,6 @@
 # Settled decisions
 
-74 decisions (D0-D72, plus D40a). The numbers are stable — other documents reference
+75 decisions (D0-D73, plus D40a). The numbers are stable — other documents reference
 them. Ordered by theme, not chronologically.
 
 ---
@@ -328,6 +328,41 @@ check is necessary, not sufficient — `pdftotext` is not their parser.
 It passes today on the current LaTeX toolchain, which makes it a regression
 guard rather than a fix: it earns its place the day a font, template or engine
 changes.
+
+**D73. The minimum viable WF2 is a check over `tailor-cv`, not a replacement
+for it.** Decided 2026-09-05, reversing the direction of the block.
+
+`tailor-cv` works and is in use. Rebuilding what it does — a renderer, a
+structured master, per-application overrides, aliases, section handling — is
+most of the complexity in WF2, and its unique value is reproducibility and a
+design that does not drift. Both matter on a long search; neither is worth
+waiting for on a short one.
+
+The checks, however, do not need any of it. They take a finished PDF and the
+master profile, so nothing has to know what produced the document.
+
+`jam check <pdf|dir>` answers three questions: does it claim anything the
+master does not hold, does its text come back out, is it the length it should
+be. Everything it flags is a question rather than a verdict — the answer is
+usually "true, so put it in the master" or "not true, so take it out".
+
+**Reading the PDF rather than the source removes a whole class of defect.**
+The three false-positive classes hit during implementation — skill names
+living in master keys, layout parameters read as content, template words read
+as claims — all came from turning YAML into LaTeX and back. A PDF holds
+exactly what a person and a parser see.
+
+**Noise is the thing that decides whether a check is used.** Run over 29 real
+applications it first reported around fifteen findings each, most of them
+ordinary words capitalised in a skills line. A check nobody reads is worse
+than none, so ordinary English words are filtered by the system word list —
+while acronyms, mixed-case names, anything with a digit, and a list of
+technology names that collide with English words (kafka, snowflake, spark,
+delta, etl) always survive. Hiding a real technology is the one failure this
+cannot have.
+
+The renderer stays in the tree, tested and working, for whenever the search
+turns out to be long.
 
 ---
 

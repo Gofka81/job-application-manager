@@ -39,7 +39,7 @@ back: a ping on submission, feeding the watchdog on the Pi.
 | [`docs/data-model.md`](docs/data-model.md) | `data/` layout, file schemas, logs, keys |
 | [`docs/wf2.md`](docs/wf2.md) | WF2 in full: diagram, gates, what is built |
 | [`docs/workflows.md`](docs/workflows.md) | WF1-WF7: what each does, what is settled, what is open |
-| [`docs/decisions.md`](docs/decisions.md) | 74 settled decisions with reasoning |
+| [`docs/decisions.md`](docs/decisions.md) | 75 settled decisions with reasoning |
 | [`docs/risks.md`](docs/risks.md) | risks per WF, implementation order |
 | [`docs/research.md`](docs/research.md) | existing solutions, career-ops as a reference |
 | [`todo.md`](todo.md) | important, but not now |
@@ -70,10 +70,14 @@ Ask Claude Code to tailor an application, or invoke `/tailor`. The skill in
 against the master profile, writes the tailoring plan, and renders through the
 gates. It writes decisions; `jam` writes the PDF.
 
+The CV itself is still produced by the standalone `tailor-cv` skill, which
+works; this repository checks the result rather than replacing it (D73).
+
 ```sh
-jam render --app 2026-09-05--northwind--senior-swe   # render and check
-jam coverage --app 2026-09-05--northwind--senior-swe # validate the coverage record
-jam gaps                                             # what the market wants that you lack
+jam check ~/CV/applications --max-pages 1   # check finished PDFs against the master
+jam gaps                                    # what the market wants that you lack
+jam coverage --app <app_id>                 # validate one coverage record
+jam render --app <app_id>                   # render from the master, if you want to
 ```
 
 ## Setup after cloning

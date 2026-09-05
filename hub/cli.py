@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from hub import config, coverage, render
+from hub import check as check_mod, config, coverage, render
 
 
 def cmd_render(args: argparse.Namespace) -> int:
@@ -33,6 +33,37 @@ def cmd_render(args: argparse.Namespace) -> int:
     out = out or config.ROOT / "output" / "cv.tex"
     return render.build(out, tailoring=tailoring, jd=jd,
                         compile_pdf=not args.no_pdf)
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    """Check finished CVs against the master, whatever produced them."""
+    cfg = config.load()
+    master = yaml.safe_load(cfg.master_profile.read_text())
+    source = render.source_text(master)
+    ident = master.get("identity", {})
+    contact = [ident.get("email")] if args.contact else []
+    allow = set(cfg.factgate_allow)
+
+    targets = []
+    for raw in args.paths:
+        p = Path(raw)
+        targets.extend(sorted(p.rglob("*.pdf")) if p.is_dir() else [p])
+    if not targets:
+        print("nothing to check", file=sys.stderr)
+        return 1
+
+    failed = 0
+    for pdf in targets:
+        try:
+            report = check_mod.check(pdf, source, contact, allow, args.max_pages)
+        except check_mod.atscheck.ExtractorMissing as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        print(report.report())
+        failed += not report.ok
+    if len(targets) > 1:
+        print(f"\n{len(targets) - failed}/{len(targets)} pass")
+    return 3 if failed else 0
 
 
 def cmd_coverage(args: argparse.Namespace) -> int:
@@ -100,6 +131,13 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--out", help="output .tex path")
     r.add_argument("--no-pdf", action="store_true")
     r.set_defaults(func=cmd_render)
+
+    ck = sub.add_parser("check", help="check finished CV PDFs against the master")
+    ck.add_argument("paths", nargs="+", help="PDF files or directories to scan")
+    ck.add_argument("--max-pages", type=int)
+    ck.add_argument("--contact", action="store_true",
+                    help="also require the contact email to extract")
+    ck.set_defaults(func=cmd_check)
 
     cv = sub.add_parser("coverage", help="validate and summarise an application's coverage")
     cv.add_argument("--app", required=True)

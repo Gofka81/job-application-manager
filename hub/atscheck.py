@@ -40,6 +40,17 @@ class ExtractorMissing(RuntimeError):
     pass
 
 
+def page_count(pdf: Path) -> int | None:
+    """Pages in a PDF, via poppler with a fallback scan of the raw bytes."""
+    if shutil.which("pdfinfo"):
+        r = subprocess.run(["pdfinfo", str(pdf)], capture_output=True, text=True)
+        for line in r.stdout.splitlines():
+            if line.startswith("Pages:"):
+                return int(line.split()[1])
+    blob = pdf.read_bytes()
+    return (blob.count(b"/Type /Page") - blob.count(b"/Type /Pages")) or None
+
+
 def extract(pdf: Path) -> str:
     if not shutil.which("pdftotext"):
         raise ExtractorMissing(

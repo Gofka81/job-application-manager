@@ -58,6 +58,10 @@ Nothing runs without this. Done once.
 
 ---
 
+> **Revised 2026-09-05 (D73).** The CV is produced by `tailor-cv`; this
+> repository checks the result. `jam check` is the path. The renderer and the
+> tailoring machinery below are built and tested but not on it.
+
 ## Block 1 · Intake — the submission path
 
 The main block. Until it works, nothing else has anything to stand on.
