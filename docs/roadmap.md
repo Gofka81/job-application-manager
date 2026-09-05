@@ -90,8 +90,8 @@ The main block. Until it works, nothing else has anything to stand on.
 - [x] **B1.7d** `S` Bullet merging in the render path
 - [~] **B1.7e** `M` Cover letter — parked, see `todo.md`. Gate scoping is
       settled; it needs a template and a brief first
-- [ ] **B1.7f** `S` Move the tailoring skill into `.claude/skills/`, carrying
-      over `references/tailoring-principles.md` (D34)
+- [x] **B1.7f** `S` Tailoring skill in `.claude/skills/tailor/`, bound to the
+      `coverage.yaml` / `tailoring.yaml` contracts (D34)
 - [ ] **B1.8** `M` Answer bank: schema, bootstrap over 30-40 standard
       questions, extraction from old CVs and LinkedIn
 - [ ] **B1.9** `M` The agent fills the form, matches slots, asks in a batch

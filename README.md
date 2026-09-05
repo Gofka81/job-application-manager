@@ -63,6 +63,19 @@ Architecture settled. No code yet beyond the skeleton.
 Open: a WF1 review, two items in `todo.md`, and details deliberately deferred
 to the design stage of each block.
 
+## Applying to a vacancy
+
+Ask Claude Code to tailor an application, or invoke `/tailor`. The skill in
+`.claude/skills/tailor/` reads the job description, records what it asks for
+against the master profile, writes the tailoring plan, and renders through the
+gates. It writes decisions; `jam` writes the PDF.
+
+```sh
+jam render --app 2026-09-05--northwind--senior-swe   # render and check
+jam coverage --app 2026-09-05--northwind--senior-swe # validate the coverage record
+jam gaps                                             # what the market wants that you lack
+```
+
 ## Setup after cloning
 
 ```sh
