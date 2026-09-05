@@ -1,0 +1,35 @@
+# --- private data: NEVER committed (D56) ---
+# data/* not data/ — otherwise git won't descend into the directory
+# and the exceptions below would never apply
+data/*
+!data/README.md
+!data/.gitkeep
+
+# --- secrets (D57) ---
+.env
+*.pem
+*credentials*.json
+*token*.json
+
+# --- derived ---
+*.duckdb
+*.duckdb.wal
+output/
+*.pdf
+
+# --- python ---
+*.egg-info/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- IDE ---
+.idea/
+.vscode/
+
+# --- macOS ---
+.DS_Store

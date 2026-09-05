@@ -1,0 +1,37 @@
+# Tunable knobs. Not secret — secrets live in .env (D57).
+#
+# Thresholds are QUERY PARAMETERS, not facts in history (D14): changing one
+# recomputes the whole history, no migration.
+
+paths:
+  data: data
+  templates: templates
+
+# D15 — both provisional. UK replies come later than the 14/21 norm of
+# English-language trackers.
+thresholds:
+  stale_days: 21        # follow-up trigger (WF6), not terminal
+  ghosted_days: 45      # terminal in the funnel
+  # D16: once 30+ times-to-first-response exist, set ghosted_days to their p90
+  # and record the change in changes.jsonl.
+  recalibrate_after_responses: 30
+
+# D48 — sample floors. "not enough data" is a first-class output.
+detector:
+  claim_min_n: 20       # no comparative claims below this many submitted
+  hop_min_n: 3          # no median for a transition below this many completions
+  dead_channel_min_n: 30 # rule of three: 0 replies out of 30 => rate under 10%
+  response_grace_days: 21 # applications younger than this are not yet evidence
+
+# D10 — a property of the engine, not of self-discipline.
+followup:
+  max_touches_per_company: 2
+  min_days_between: 10
+  stop_after_rejection: true
+
+# D35 — the deterministic fact gate. Names and numbers listed here are
+# admitted even though the master does not hold them. Keep it near-empty:
+# every entry is a hole in the check, and the right fix is usually to put
+# the fact in master-profile.yaml instead.
+factgate:
+  allow: []

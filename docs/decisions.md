@@ -1,0 +1,472 @@
+# Settled decisions
+
+74 decisions (D0-D72, plus D40a). The numbers are stable — other documents reference
+them. Ordered by theme, not chronologically.
+
+---
+
+## Boundaries and submission
+
+**D0. WF3 boundaries.** WF3 is purely the submission mechanism: it starts
+once WF2 has produced the files and ends at a confirmed Submit. Writing the
+application record is already WF4. Positioning, focus and CV version do not
+belong to WF3.
+
+**D6. Form filling is done by an agent in the browser**, not by scripted
+automation over selectors. There is no brittleness against markup — the agent
+looks at the page and acts on context.
+
+**D7. STOP shows a list of fields with values, agent-inferred ones
+highlighted.** The residual risk after D6 is different: non-determinism
+produces a plausible but wrong answer. "Check the form" becomes a
+click-through by the fiftieth application; five highlighted fields stay
+readable.
+
+**D8. Awkward fields sit in the profile in advance** — salary, location, work
+authorization, notice period. So the agent takes them rather than inferring
+them.
+
+**D9. `application.json` is created after Submit is confirmed**, never
+before. Otherwise abandoned submissions corrupt the funnel denominator.
+
+---
+
+## Sampling
+
+**D1. `role_archetype` in `application.json`.** Originally this existed so CV
+versions could be compared within an archetype. With per-application tailoring
+(D43) there are no versions to compare, but the field stays: it is a property
+of the *vacancy*, not of the CV — the market assigns it, not you — so it
+accumulates faster and still answers "do I convert worse on analytics roles".
+
+**D2. A guard metric alongside conversion:** median `radar_score` and
+seniority level. Conversion is trivially gamed by lowering ambition;
+conversion up while quality drops is a regression.
+
+**D3. `filter_version` in `changes.jsonl`.** job-radar filters do not change
+inside a measurement block, otherwise the sample shifts mid-measurement.
+
+**D4. Positioning is not A/B tested.** A block of at least 30 submissions
+with fixed positioning, evaluated **only for catastrophe**. An experiment on
+difference will not finish before the search ends.
+
+**D5. Range restriction is not treated.** Triage is validated only within the
+score range actually applied to.
+
+---
+
+## Follow-up
+
+**D10. Hard caps on touches:** no more than 2 per company, at least 10 days
+apart, a full stop after an explicit rejection. Aging makes reminders cheap;
+the cap is a property of the engine, not self-discipline.
+
+---
+
+## Interviews
+
+**D11. The debrief is three questions plus a prediction**, the same day:
+worst answer; what surprised me; which story landed; prediction in one word.
+Three is the threshold at which a debrief still gets written while exhausted.
+The prediction gives calibration: the unit of observation is a round, so it
+is measurable at small volumes.
+
+**D12. A weak spot from one interview is a hypothesis.** Only what repeats
+twice reaches the file. Otherwise preparation gets rewritten around noise.
+
+**D13. Capture cheap, curate later.** The debrief is written raw on the day
+of the interview; promotion into the story bank is a separate unhurried act
+once a week. Same pattern as `draft` in the answer bank: deliberately one
+mechanism serving two assets.
+
+**D64. The main WF5 artifact is the prep sheet**, one page before a round.
+The constraint matters more than the contents: mini-research is a classic
+rabbit hole.
+
+**D65. The prep sheet is generated on demand**, not automatically —
+provisionally. Automatic generation would produce a pile of documents nobody
+opens. To be revisited at design time.
+
+**D66. The story bank is structured for retrieval, not for storage.**
+Competency, technologies, scale, raw text. The value is not in what is
+recorded but in it surfacing at the right moment.
+
+**D67. The question bank is a separate asset.** Interview questions repeat
+across companies just like form questions do. Measurable at small volumes:
+dozens of questions per season.
+
+**D68. `rounds.jsonl` steers preparation focus.** Analytics does not report
+here, it steers: once the round type where applications die is visible, the
+prep sheet weights toward it.
+
+**D69. Not doing:** calendar and round scheduling, mock interviews.
+
+---
+
+## Silence and thresholds
+
+**D14. `ghosted` is not written to the log — it is computed.** Once
+submissions are recorded automatically the denominator is complete, so
+silence is fully derivable. Consequence: **a threshold is a query parameter,
+not a fact in history** — change your mind, recompute the whole history, no
+migration.
+
+**D15. Two different thresholds, both provisional, both in one config
+location:** `stale_days` 21 (follow-up trigger, not terminal),
+`ghosted_days` 45 (terminal in the funnel). The numbers from English-language
+trackers (14 / 21-30) do not transfer: replies on the UK market come later.
+
+**D16. Recalibration rule.** Once 30+ observed times-to-first-response
+accumulate, set `ghosted_days` to their p90 and record it in `changes.jsonl`.
+
+**D17. Ghost rate and rejection rate are separate metrics.** "40% rejected"
+and "40% silent" are different diagnoses: the first is about the CV and
+profile, the second about the channel — or about the application never
+arriving.
+
+---
+
+## Email
+
+**D18. Emails are matched against the closed list of applications.** Not
+open-world extraction of a company from the email body, which is what vendors
+do (they have to — they do not know where you applied). Plus a time window
+from `submitted_at`. A fundamentally easier problem that needs none of their
+data volume.
+
+**D19. Classification is allowed to say `unclear`.** A model without that
+option will guess — and will guess wrong exactly on borderline phrasings like
+"we'll keep your CV on file".
+
+---
+
+## Runtime
+
+**D20. There is no scheduled daemon.** Everything derived is computed at
+query time.
+
+**D21. The system splits in two by the right to call a model.** The
+deterministic core (queries, reports, digest, validation, fact gate) is
+Python + DuckDB with no model. The agentic edges (generation, browser,
+classification) run in a Claude Code session. This operationalizes "LLM calls
+are bounded": the boundary runs through code.
+
+**D22. A session opens with the digest.** Email is checked on demand at
+session start — a day of latency changes nothing. The nudge rides on an
+action the human already wants to take.
+
+**D23. The "you disappeared" watchdog lives on the Pi, not the Mac.** A
+reminder about absence cannot live in the system the person has vanished
+from. The ping is sent **at Submit**, not at session start: a session without
+submissions is not activity. The Pi stores one number, not a log; analytics
+never reads it.
+
+**D28. Two ways to switch the watchdog off.** `snooze` with an expiry (the
+radar keeps running) or stopping the container (the search is over). Snooze
+always carries an expiry, is visible in the digest, its reason goes into
+`changes.jsonl`, and **its delivery is confirmed** — unlike the ping, an
+undelivered snooze means being nagged on holiday.
+
+---
+
+## Intake
+
+**D24. One intake, two branches, one dossier.** From INBOX the JD and score
+already exist. For an arbitrary link the agent reads the page itself.
+Downstream, the code does not know which branch it came from.
+
+**D25. `discovery` is separate from `channel`.** Where you found it and where
+you applied are different dimensions. `discovery` shows whether WF1 brings
+quality or only volume.
+
+**D26. Off-radar JDs run through the same bounded triage**, so `radar_score`
+stays comparable. `score_source` records its provenance.
+
+**D27. Dedup against already-submitted applications.** The same vacancy can
+resurface a month later from a new source. The hub checks only its own
+records; it never reaches into the Pi. Plus company context shown at intake —
+also needed for the D10 cap.
+
+---
+
+## Statuses
+
+**D29. Six values:** `submitted`, `acknowledged`, `in_process`, `offer`,
+`rejected`, `withdrawn`. Every extra status is a decision that has to be made
+at recording time.
+
+**D30. `acknowledged` separate from `in_process`** — the difference between a
+bot and a human. The first proves the application arrived; the second is the
+first real reply, from which the main timing metric runs.
+
+**D31. Who writes what, by asymmetry.** Automation writes what a human would
+forget (acknowledgements, rejections). It asks about what the human would
+notice anyway (a human reply, an offer).
+
+**D32. Interview stages are not statuses but `rounds.jsonl`.** Round counts
+and types vary; a status holds only the latest value, while the funnel is
+built on the sequence.
+
+**D33. `rejected` is terminal.** A reopened role is a new application with a
+new `app_id`.
+
+---
+
+## CV anti-fabrication
+
+**D34. `tailor-cv` is kept for its judgement, not its mechanics.** Its shape
+was right for a *standalone tool*; as a *system component* the division of
+labour is different — a deterministic skeleton with the agent at the edges.
+
+What survives: reading the JD, the requirement-to-coverage table, the honest
+gaps section, bounded reframing, the cover letter, and
+`references/tailoring-principles.md`.
+
+What is taken away: it no longer edits `.tex`, no longer controls margins or
+layout, no longer decides what to cut, no longer compiles. Its output is
+`overrides.yaml` plus `changes.md`, not a CV.
+
+The skill therefore **moves into the repo** (`.claude/skills/`), because it is
+now bound to a contract — the `overrides.yaml` schema, profile names, gate
+behaviour — and a global skill would drift from it on the first renderer
+change. Reviewed after analysing 29 real tailored applications on 2026-09-05;
+see `research.md`.
+
+**D35. Its `Never fabricate` is an instruction to a model, not a check.** A
+deterministic fact gate modelled on career-ops' `verify-cv-facts.mjs` is
+added: claims of type `employer`, `title`, `tool` and metrics, checked
+against the master.
+
+**D36. The gate is wired into the PDF build**, not a separate step. No PDF
+exists without passing it. Human approval comes after the gate, not instead
+of it.
+
+**D37. The extractor is symmetric.** The same code runs over the document and
+over the source, so widening a pattern can only add claims on both sides — it
+cannot hide a fabrication by construction.
+
+**D38. No model inside the gate.** An LLM entailment check was rejected: a
+deterministic check does not rubber-stamp its own output.
+
+**D39. Atomizing the profile is NOT required.** The gate compares text to
+text, so per-bullet `ref` links into the profile are unnecessary.
+
+**D40. The gate is a boundary, not a ban.** Earlier this said "wire the gate
+into `tailor-cv`", which no longer describes anything: the renderer is ours
+and the gate lives in it.
+
+The rule is not "do not rewrite" but **"rewrite freely, and no new employer,
+title, technology or number will appear"** — enforced mechanically rather than
+promised. Inside that envelope the agent may reword a bullet, merge two, or
+append the JD's own framing to an existing fact.
+
+This replaces an earlier, stricter proposal to forbid bullet rewriting
+outright. That proposal answered a misdiagnosis: a first pass suggested the
+skill was rewriting most bullets and inventing skills, but it had compared
+against a master profile that had itself changed in the meantime. The skill's
+own contemporaneous logs show prose rewriting in 9 of 29 applications, with
+selection, ordering and layout dominating — and an explicit self-audit that no
+employer, title, date, metric or technology was added.
+
+**D40a. Reframed bullets are checked against their declared source, not the
+whole master.** An override names the bullets it derives from; its claims must
+be a subset of theirs. Checking against the whole master would let a metric
+from one employer migrate into another employer's bullet. This is stricter
+than career-ops' whole-document comparison, and right for this use.
+
+**D70. Two artifacts per application: what changed, and what was missing.**
+`tailoring.yaml` records the first, `coverage.yaml` the second — both
+structured, because prose in `changes.md` cannot be joined to an outcome
+later.
+
+`coverage.yaml` lists each JD requirement with `weight` (required/preferred),
+`status` (covered/partial/missing) and `evidence` pointing at master ids, so
+a claim of coverage is checkable rather than asserted.
+
+**The reason to record it from day one is the analysis that needs no
+outcomes:** aggregating `missing` across applications answers "what does the
+market want that I do not have", the unit of observation is a requirement
+rather than an application, and it therefore works at this volume — unlike
+almost everything else in WF7.
+
+Two further uses, in descending strength: which specific missing requirement
+precedes rejection (unit = requirement, hundreds of observations); and whether
+a higher covered share yields more interviews (unit = application, one
+predictor against ~15 events — only a large effect would show).
+
+**Join gaps to rejection latency, not just to the fact of rejection.** A
+missing visa, location or years-of-experience is a knockout filter and rejects
+within a day; a missing technology is a human judgement and rejects over
+weeks. Different gaps, different remedies.
+
+**Confounder, stated up front:** you apply where you partly match, so
+"X missing -> rejected" can simply mean "harder roles reject more". Controlled
+with `radar_score` and comparisons within similar roles.
+
+**D72. The PDF must survive being read back.** After compiling, the text is
+extracted with `pdftotext` and compared against what was rendered: every
+token must reappear, no ligature glyphs, contact details present, section
+order unchanged. Failure blocks the PDF (exit 4).
+
+The mechanism this protects is retrieval. Recruiters do not read every
+application — they run keyword searches and read the top of the results, and
+boolean search matches exact strings. A term that does not extract is
+invisible however prominent it looks on the page, and nothing errors.
+
+**The ligature scan is raw, not inferred from lost tokens.** Our tokeniser
+NFKC-normalises, so "workﬂows" compares equal to "workflows" and nothing
+registers as lost — while an ATS parser that does not normalise leaves the
+term unsearchable. A check that reports success in exactly the failing case
+is worse than no check.
+
+**A real ATS was considered and rejected.** Greenhouse and Workday parse with
+their own engines and expose no candidate-facing API; the only way to observe
+their parsing is to submit test applications to real employers, which
+pollutes their pipelines and burns companies worth applying to. Passing this
+check is necessary, not sufficient — `pdftotext` is not their parser.
+
+It passes today on the current LaTeX toolchain, which makes it a regression
+guard rather than a fix: it earns its place the day a font, template or engine
+changes.
+
+---
+
+## Master and CV versions
+
+**D41. One master, structured** — `master-profile.yaml`. Prose, dates, skills
+with start dates, awkward form fields. There is no second master.
+
+**D42. The CV is rendered through a template — LaTeX, not Typst.** Revised
+2026-09-04 at implementation: Typst is not installed, `latexmk` is, and the
+existing `resume.cls` already carries a design that was approved. Rebuilding
+typography for a different engine buys nothing — the requirement was
+"rendered from structured data", not a particular engine.
+
+Consequence: `templates/` lives in the **repo**, not under `data/`. The
+earlier layout put it in `data/`, which is never versioned (D56) — losing the
+CV template to our own privacy rule would be absurd.
+
+**D43. No fixed CV versions. Tailoring is per application.** Reversed on
+2026-09-05.
+
+A fixed set of 3-5 render profiles existed to keep `cv_version` usable as an
+analytics dimension. But a verdict on a version needs 30 submissions *per
+version*, and at 60-150 applications no more than one would ever get there —
+the same arithmetic that killed A/B testing on positioning (D4). The dimension
+being defended could only ever have reported "not enough data".
+
+What diagnoses the CV instead is the funnel wall, which needs no versions at
+all: "12 of 19 died before a first reply" is a signal about the CV and the
+positioning however many variants produced them.
+
+So `versions/` is gone. Each application carries its own
+`tailoring.yaml` — sections, `drop`, `emphasis`, `max_pages`, aliases, bullet
+overrides — self-contained, starting from the bare master every time. No
+shared default set of drops: a default would quietly become the fixed version
+set this decision removes.
+
+`cv_version` survives only as **provenance** — a pointer to or hash of that
+file, answering "what exactly went out" without posing as a grouping.
+
+Consequence: **the gate matters more, not less.** Structure used to be
+constrained by the profile; now nothing constrains it except the fact gate and
+`max_pages`.
+
+The detector loses its "dead CV version" check.
+
+**D44. The fact gate checks rendered text against the master** flattened to
+plain text. Rephrasing for a JD does not change the claims.
+
+**D45. Rejected:** keeping `.tex` as the master with YAML only for forms.
+Dates and companies would then live in two places and need a sync check.
+
+---
+
+## Logs
+
+**D46. The `source` vocabulary and retraction.** `email`, `portal`, `manual`,
+`correction` (replaces an earlier record with the same `(app_id, to)`),
+`backfill`. `from: null` means the prior state is unknown; `to: null` is a
+retraction and nothing is deleted.
+
+**D47. Backfilled records take no part in latency computation.** A date
+written after the fact is not an observation of time.
+
+**D48. Sample floors in the detector's report.** No comparative claims below
+~20 submitted; no median for a transition with fewer than 3 completed
+measurements; medians report right censoring — otherwise, with high ghosting,
+they are systematically optimistic.
+
+---
+
+## Relationship to career-ops
+
+**D49. We write our own; career-ops is a reference.** Forking was rejected:
+the project is not built for the UK market. We take algorithms and edge cases,
+not the codebase. MIT, so porting is allowed with attribution.
+
+**D50. Port to Python, do not embed Node.** The core is already Python +
+DuckDB.
+
+**D51. Tests are ported along with the logic — and they matter more.** The
+edge cases there are encoded in `--self-test` and `*.test.mjs`.
+
+**D52. Parity is proven with golden fixtures.** The original scripts still
+run: execute them, capture the outputs, keep them as fixtures.
+
+**D53. Read the implementation, not the header.** `set-status.mjs` does not
+contain the correction logic even though the format is documented in
+`funnel-velocity.mjs`'s header.
+
+**D54. A regex trap when porting.** The patterns use `\p{L}` and `\p{N}` with
+the `u` flag; Python's `re` does not support that — the `regex` package is
+required. A bug of exactly this class already happened there.
+
+**D55. Attribution in the ported file's docstring:** source, commit, MIT.
+
+**D71. Documentation uses a fictional persona, never the real profile.**
+The repository is public; the data it drives is not. Examples use an invented
+US software engineer — Jordan Reyes, Austin TX — at the standard fictional
+companies `Northwind Systems`, `Contoso` and `Fabrikam`, with ids
+`northwind`, `contoso`, `fabrikam`.
+
+This is not only about privacy. Real employers in a general-purpose project's
+schemas read as though the tool were built for one person, and an example that
+happens to be true invites copying a fact instead of the shape.
+
+The same applies to code: identity belongs in `master-profile.yaml`, never in
+a renderer or a test fixture.
+
+---
+
+## Privacy
+
+**D56. `data/` never enters git.** The repo keeps only the skeleton. The rule
+is made mechanical: a pre-commit hook rejects anything under `data/` in
+staged, so `git add -f` will not work. Accepted consequence: there is no
+history or rollback for the data; backups are the OS's job.
+
+**D57. Secrets in `.env`**, `.env` in `.gitignore`, `.env.example` in the
+repo.
+
+**D58. Bounded also applies to how much data leaves the machine.** What goes
+to the model is not a mailbox but a single candidate: sender, subject, first
+N characters. The Gmail query is narrow, access is read-only.
+
+**D59. `contacts.tsv` is other people's personal data.** Do not publish, do
+not sync, delete once the search is over. The rest of the history stays.
+
+**D60. Telegram gets numbers only.** No company names: it is someone else's
+server and a chat history on a phone. Vacancies that job-radar pushes to
+INBOX are existing practice and do not change; this is about submissions.
+
+**D61. `jd.md` is someone else's text.** Fine to keep privately, not to
+publish.
+
+**D62. Mac→Pi channel: Cloudflare Tunnel, Access service token.** An
+unauthenticated request never reaches the Pi — it is cut off at the edge. No
+authentication logic appears on the Pi, and the token can be revoked without
+a redeploy. The endpoint accepts a date and nothing else.
+
+**D63. A silent watchdog failure is worse than no watchdog** — because it is
+relied upon. So the digest shows "last ping accepted by the Pi: 04.09".

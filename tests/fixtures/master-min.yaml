@@ -1,0 +1,50 @@
+# Fixture for the renderer. Deliberately fake: tests must never depend on
+# data/, which is private and gitignored (D56).
+identity:
+  name: Ada Lovelace
+  email: ada@example.com
+  phone: "+44 0000 000000"
+  location: London, UK
+  linkedin: https://www.linkedin.com/in/example
+  github: https://github.com/example
+experience:
+  - id: acme
+    company: Acme & Co
+    title: Data Engineer
+    from: 2024-08
+    to: null
+    bullets:
+      - Cut costs by 12% and handled ~500 datasets under 50_000 rows
+      - Second bullet that a profile may drop
+  - id: initech
+    company: Initech
+    title: Analyst
+    from: 2022-01
+    to: 2023-03
+    bullets:
+      - Older role bullet
+projects:
+  - id: widget
+    name: Widget
+    tagline: A thing
+    url: https://github.com/example/widget
+    bullets:
+      - Project bullet one
+      - Project bullet two
+education:
+  - id: uni
+    degree: Bachelor of Computer Science
+    institution: University of Example
+    result: First-Class
+    gpa: "19.33"
+certifications:
+  - name: Example Certified
+    date: 2025-10
+    url: https://example.com/cert
+skills:
+  languages:
+    python: {since: 2022-01}
+    sql: {since: 2022-01}
+  storage:
+    relational_db: {since: 2022-01}
+    duckdb: {since: null}

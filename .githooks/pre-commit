@@ -1,0 +1,22 @@
+#!/bin/sh
+# Mechanical enforcement of D56: private data never reaches git.
+# .gitignore covers the ordinary case; this hook catches `git add -f`.
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+data_hit=$(printf '%s\n' "$staged" | grep -E '^data/' | grep -vE '^data/(README\.md|\.gitkeep)$')
+env_hit=$(printf '%s\n' "$staged" | grep -E '(^|/)\.env$')
+blocked=$(printf '%s\n%s\n' "$data_hit" "$env_hit" | grep -v '^$')
+
+if [ -n "$blocked" ]; then
+  echo "commit rejected: private data is staged" >&2
+  echo >&2
+  printf '  %s\n' $blocked >&2
+  echo >&2
+  echo "data/ and .env are never versioned — decisions D56, D57." >&2
+  echo "unstage:  git rm --cached <file>" >&2
+  echo "          (or git restore --staged <file>, once commits exist)" >&2
+  exit 1
+fi
+exit 0
