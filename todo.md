@@ -103,3 +103,29 @@ Option 3 is worth a look: it gets the retrieval benefit once, at build time,
 with no per-application cost and no cardinality damage.
 
 **Trigger.** Next working session — this blocks the shape of WF2.
+
+---
+
+## WF2 · cover letter (parked — needs a template first)
+
+**Why it stopped.** An implementation was written and removed on 2026-09-05:
+building a generic letter without knowing the writer's voice or what they want
+in it produces something that will be redesigned anyway. It resumes when there
+is a template and a brief.
+
+**What is already settled, so it does not get re-derived:**
+
+The letter goes through the same gates as the CV, with one difference in
+scope. A letter legitimately names the company and the role, and neither is in
+the master — so the allowed source is the master **plus `company` and `title`
+from `application.json`**.
+
+**The job description is deliberately not part of that source.** Admitting it
+would let the letter claim any technology the vacancy happens to mention,
+which is the exact failure the gate exists to prevent.
+
+The letterhead date is generated rather than claimed, so its tokens are
+exempt.
+
+**What is needed to restart:** a LaTeX letter template, and a brief on what
+the letter should contain and in what voice.

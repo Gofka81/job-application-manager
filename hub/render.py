@@ -20,7 +20,7 @@ from pathlib import Path
 
 import yaml
 
-from hub import atscheck, config, factgate
+from hub import atscheck, config, factgate, overrides as ov
 
 MONTHS = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
           7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"}
@@ -87,8 +87,12 @@ def source_text(master: dict) -> str:
 # Commands whose ARGUMENT is layout, not content. Dropping the command alone
 # leaves "0.4in" and "-1.25em" behind, and the gate then reports 0.4 and 1.25
 # as invented numbers.
+# An ALLOWLIST, so a layout command not named here leaks its argument into the
+# checked text as a claim — `\pagestyle{empty}` reported "empty" as a term lost
+# in extraction. Add to it when the template gains a command.
 _LAYOUT_CMD = re.compile(
-    r"\\(?:vspace|hspace|itemsep|documentclass|usepackage|geometry)\*?"
+    r"\\(?:vspace|hspace|itemsep|documentclass|usepackage|geometry|pagestyle"
+    r"|setlength|renewcommand|newcommand|hfill|linespread)\*?"
     r"(?:\[[^\]]*\])?(?:\{[^}]*\})?"
 )
 _DIMENSION = re.compile(r"-?\d+(?:\.\d+)?\s*(?:in|em|ex|pt|cm|mm)\b")
@@ -125,8 +129,25 @@ def link_label(url: str) -> str:
     return re.sub(r"^https?://(www\.)?", "", url).rstrip("/")
 
 
-def flatten_skills(skills: dict, drop: set) -> list[str]:
-    """Group dict -> display names, preserving file order, minus dropped ones."""
+def alias_form(label: str, aliases: list[str], jd: str) -> str:
+    """Pick the spelling the vacancy itself uses, if it declares one.
+
+    A recruiter's boolean search matches exact strings and does not expand
+    synonyms: `AND "ETL"` will not return a CV that says "Data Pipelines".
+    Only forms declared in the master are candidates, so this can change how
+    a fact is spelled but never what is claimed — the fact gate is satisfied
+    by construction.
+    """
+    if not jd:
+        return label
+    for form in aliases:
+        if re.search(rf"(?<!\w){re.escape(form)}(?!\w)", jd, re.I):
+            return form
+    return label
+
+
+def skill_labels(skills: dict, drop: set, jd: str = "") -> list[tuple[str, str]]:
+    """(key, printed label) for every skill that survives `drop`."""
     special = {
         "sql": "SQL", "aws": "AWS", "emr": "EMR", "s3": "S3", "hdfs": "HDFS",
         "nosql": "NoSQL", "ci_cd": "CI/CD", "rest_apis": "REST APIs",
@@ -143,13 +164,19 @@ def flatten_skills(skills: dict, drop: set) -> list[str]:
         for key, meta in entries.items():
             if key in drop or f"{group}.{key}" in drop:
                 continue
-            label = special.get(key) or key.replace("_", " ").title()
-            detail = (meta or {}).get("detail")
-            out.append(f"{label} ({detail})" if detail else label)
+            meta = meta or {}
+            label = meta.get("display") or special.get(key) or key.replace("_", " ").title()
+            label = alias_form(label, meta.get("aliases") or [], jd)
+            detail = meta.get("detail")
+            out.append((key, f"{label} ({detail})" if detail else label))
     return out
 
 
-def render(master: dict, profile: dict) -> str:
+def flatten_skills(skills: dict, drop: set, jd: str = "") -> list[str]:
+    return [label for _, label in skill_labels(skills, drop, jd)]
+
+
+def render(master: dict, profile: dict, jd: str = "") -> str:
     sections = profile.get("sections") or []
     drop = set(profile.get("drop") or [])
     emphasis = [e.lower() for e in (profile.get("emphasis") or [])]
@@ -168,7 +195,7 @@ def render(master: dict, profile: dict) -> str:
     L.append(r"\begin{document}")
 
     if "skills" in sections:
-        names = flatten_skills(master["skills"], drop)
+        names = flatten_skills(master["skills"], drop, jd)
         # Emphasis only reorders: a skill cannot be introduced here that the
         # master does not hold, so the fact gate stays satisfiable (D44).
         if emphasis:
@@ -184,12 +211,13 @@ def render(master: dict, profile: dict) -> str:
             if job["id"] in drop:
                 continue
             span = f"{month(job['from'])} - {month(job.get('to'))}"
+            bullets = ov.resolve(job, profile.get("bullets", {}), drop)
+            if not bullets:
+                continue
             L.append(rf"\textbf{{{tex(job['company'])}}} - {tex(job['title'])} \hfill {span}")
             L.append(r"\begin{itemize}")
             L.append(r"\itemsep -3pt {}")
-            for i, b in enumerate(job["bullets"]):
-                if f"{job['id']}.{i}" in drop:
-                    continue
+            for b in bullets:
                 L.append(rf"  \item {tex(b)}")
             L += [r"\end{itemize}", ""]
         L += [r"\end{rSection}", ""]
@@ -205,9 +233,7 @@ def render(master: dict, profile: dict) -> str:
             )
             L.append(r"\begin{itemize}")
             L.append(r"\itemsep -3pt {}")
-            for i, b in enumerate(p["bullets"]):
-                if f"{p['id']}.{i}" in drop:
-                    continue
+            for b in ov.resolve(p, profile.get("bullets", {}), drop):
                 L.append(rf"  \item {tex(b)}")
             L += [r"\end{itemize}", ""]
         L += [r"\end{rSection}", ""]
@@ -255,6 +281,21 @@ def page_count(pdf: Path) -> int | None:
 
 
 
+def drop_set(spec: dict) -> set[str]:
+    return set(spec.get("drop") or [])
+
+
+def alias_swaps(master: dict, spec: dict, jd: str) -> list[str]:
+    """Report which skills were printed in the vacancy's own spelling."""
+    if not jd:
+        return []
+    skills, drop = master.get("skills", {}), drop_set(spec)
+    plain = dict(skill_labels(skills, drop))
+    swapped = [(k, v) for k, v in skill_labels(skills, drop, jd) if v != plain[k]]
+    return ([f"aliases -> " + ", ".join(f"{plain[k]} as {v}" for k, v in swapped)]
+            if swapped else [])
+
+
 def default_tailoring() -> dict:
     """Everything the master holds, nothing dropped, no page limit.
 
@@ -282,12 +323,12 @@ def load_tailoring(path: Path | None) -> dict:
     return spec
 
 
-def build(out: Path, tailoring: Path | None = None,
+def build(out: Path, tailoring: Path | None = None, jd: Path | None = None,
           compile_pdf: bool = True) -> int:
     """Render to .tex and optionally to PDF.
 
-    Returns 0 on success, 1 on a missing input, 2 when the page limit is
-    exceeded, or latexmk's code when compilation fails.
+    Exit codes: 0 success, 1 missing or malformed input, 2 page limit,
+    3 fact gate, 4 ATS extraction, otherwise latexmk's own code.
     """
     cfg = config.load()
     if not cfg.master_profile.exists():
@@ -299,19 +340,38 @@ def build(out: Path, tailoring: Path | None = None,
 
     master = yaml.safe_load(cfg.master_profile.read_text())
     spec = load_tailoring(tailoring)
+    allow = TEMPLATE_WORDS | set(cfg.factgate_allow)
+
+    # Overrides are checked FIRST, against their declared sources alone
+    # (D40a). The document-level gate below then treats a verified override
+    # as legitimate source — its new wording is by definition absent from the
+    # master, so it would otherwise fail there.
+    try:
+        ov.validate(master, spec.get("bullets", {}))
+    except ov.OverrideError as exc:
+        print(f"tailoring: {exc}", file=sys.stderr)
+        return 1
+    violations = ov.verify(master, spec.get("bullets", {}), allow=allow)
+    for v in violations:
+        print(v.result.report(f"override {v.key}"), file=sys.stderr)
+    if violations:
+        return 3
+
+    jd_text = jd.read_text() if jd and jd.exists() else ""
+    for line in alias_swaps(master, spec, jd_text):
+        print(line)
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    document = render(master, spec)
+    document = render(master, spec, jd_text)
     out.write_text(document)
     shutil.copy(cfg.templates / "resume.cls", out.parent / "resume.cls")
     print(f"tex  -> {out}")
 
     # The gate runs BEFORE compilation, so no PDF exists that has not passed
     # it (D36). Human approval comes after the gate, never instead of it.
+    verified = " ".join(b["text"] for b in spec.get("bullets", {}).values())
     result = factgate.verify(
-        strip_tex(document),
-        source_text(master),
-        allow=TEMPLATE_WORDS | set(cfg.factgate_allow),
+        strip_tex(document), source_text(master) + " " + verified, allow=allow
     )
     print(result.report(spec["name"]))
     if not result.ok:
@@ -360,3 +420,4 @@ def build(out: Path, tailoring: Path | None = None,
         )
         return 2
     return 0
+

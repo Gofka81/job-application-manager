@@ -51,7 +51,7 @@ Nothing runs without this. Done once.
       and `since` dates for 18 skills. Forms ask for exactly these.
 - [x] **F3** `M` LaTeX template (`templates/resume.cls`) plus `jam render`
       from the master, with an enforced `max_pages`
-- [ ] **F5** `S` Config: `stale_days`, `ghosted_days`, paths, detector
+- [x] **F5** `S` Config: `stale_days`, `ghosted_days`, paths, detector
       thresholds
 
 **Exit:** `jam render` produces a PDF worth sending from the bare master.
@@ -77,18 +77,19 @@ The main block. Until it works, nothing else has anything to stand on.
 - [x] **B1.8a** `S` ATS extraction check wired into the build (D72)
 - [ ] **B1.7** `M` Render CV for an application: `tailoring.yaml` + aliases +
       overrides, gate and page limit before the PDF
-- [ ] **B1.7a** `S` Alias resolver — declared synonym forms in the master,
+- [x] **B1.7a** `S` Alias resolver — declared synonym forms in the master,
       matched against the JD text, applied to the SKILLS line only. No model
-- [ ] **B1.7b** `M` `overrides.yaml`: reframed and merged bullets with a
+- [x] **B1.7b** `M` `overrides.yaml`: reframed and merged bullets with a
       `from` provenance list; the gate checks each override against its
       declared sources, not against the whole master (D40a)
-- [ ] **B1.7c** `M` Coverage: JD requirements vs the master -> structured
+- [~] **B1.7c** `M` Coverage: JD requirements vs the master -> structured
       `coverage.yaml` (weight, status, evidence) plus the prose gaps section
       in `changes.md`; the tailoring plan follows from it (D70)
-- [ ] **B1.7g** `S` `jam gaps` — aggregate `missing` across applications.
+- [x] **B1.7g** `S` `jam gaps` — aggregate `missing` across applications.
       Needs no outcomes, so it pays off from the first application
-- [ ] **B1.7d** `S` Bullet merging in the render path
-- [ ] **B1.7e** `M` Cover letter through the same gate
+- [x] **B1.7d** `S` Bullet merging in the render path
+- [~] **B1.7e** `M` Cover letter — parked, see `todo.md`. Gate scoping is
+      settled; it needs a template and a brief first
 - [ ] **B1.7f** `S` Move the tailoring skill into `.claude/skills/`, carrying
       over `references/tailoring-principles.md` (D34)
 - [ ] **B1.8** `M` Answer bank: schema, bootstrap over 30-40 standard

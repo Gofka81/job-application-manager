@@ -183,3 +183,43 @@ class TestGateWiring:
     def test_escaped_percent_keeps_its_sign(self):
         # "12\%" left the backslash behind, so the claim read as a bare 12.
         assert factgate.numbers(render.strip_tex(r"costs by 12\% annually")) == {"12%"}
+
+
+class TestAliases:
+    """A recruiter's boolean search matches exact strings and does not expand
+    synonyms, so the spelling matters — but only spellings the master
+    declares are candidates, which is why the fact gate stays satisfied."""
+
+    def test_the_vacancy_spelling_wins_when_declared(self):
+        assert render.alias_form("Data Pipelines", ["ETL", "ETL Pipelines"],
+                                 "Strong ETL background required") == "ETL"
+
+    def test_the_default_stands_when_the_vacancy_is_silent(self):
+        assert render.alias_form("Data Pipelines", ["ETL"],
+                                 "Experience with Spark") == "Data Pipelines"
+
+    def test_a_match_inside_a_longer_word_does_not_count(self):
+        assert render.alias_form("Data Pipelines", ["ETL"],
+                                 "we use METLIFE tooling") == "Data Pipelines"
+
+    def test_no_jd_means_no_substitution(self):
+        assert render.alias_form("Data Pipelines", ["ETL"], "") == "Data Pipelines"
+
+    def test_first_declared_alias_present_in_the_jd_wins(self):
+        assert render.alias_form("X", ["Alpha", "Beta"], "Beta and Alpha") == "Alpha"
+
+    def test_an_alias_cannot_introduce_an_undeclared_form(self, master):
+        skills = {"processing": {"pipelines": {"display": "Data Pipelines",
+                                               "aliases": ["ETL"]}}}
+        labels = render.flatten_skills(skills, set(), "we need ELT and Kafka")
+        assert labels == ["Data Pipelines"]   # ELT was never declared
+
+    def test_display_overrides_the_derived_label(self):
+        skills = {"g": {"spark_sql": {"display": "Spark SQL"}}}
+        assert render.flatten_skills(skills, set()) == ["Spark SQL"]
+
+    def test_swaps_are_reported(self, master):
+        m = {**master, "skills": {"g": {"p": {"display": "Data Pipelines",
+                                              "aliases": ["ETL"]}}}}
+        lines = render.alias_swaps(m, render.default_tailoring(), "ETL role")
+        assert lines and "Data Pipelines as ETL" in lines[0]

@@ -33,6 +33,9 @@ from dataclasses import dataclass, field
 # reason alone. Without this every bullet's first word reads as a proper noun.
 _SENTENCE_WORDS = {
     "a", "an", "and", "the", "of", "for", "to", "in", "on", "with", "by",
+    "at", "as", "from", "during", "after", "before", "while", "this", "these",
+    "my", "our", "their", "its", "i", "we", "it", "they", "there", "when",
+    "where", "having", "both", "each", "most", "over", "under", "across",
     "built", "designed", "developed", "delivered", "implemented", "migrated",
     "modelled", "modeled", "diagnosed", "took", "administered", "integrated",
     "constrained", "applied", "reduced", "cut", "led", "owned", "created",
