@@ -296,6 +296,25 @@ def drop_set(spec: dict) -> set[str]:
     return set(spec.get("drop") or [])
 
 
+DASHES = {"\u2014": "em dash", "\u2013": "en dash"}
+
+
+def dash_warnings(content: str) -> list[str]:
+    """Flag dashes in anything an employer reads.
+
+    A warning rather than a failure: the master may already hold them, and
+    editing the master is the candidate's call, not the renderer's.
+    """
+    found = {name for ch, name in DASHES.items() if ch in content}
+    if not found:
+        return []
+    quoted = [seg.strip() for ch in DASHES for seg in content.split(ch)[:-1]]
+    tail = [q[-40:] for q in quoted[:3] if q]
+    return [f"warning: {', '.join(sorted(found))} in the rendered content — "
+            f"reads as machine-written",
+            *[f"  ...{q}[dash]" for q in tail]]
+
+
 def alias_swaps(master: dict, spec: dict, jd: str) -> list[str]:
     """Report which skills were printed in the vacancy's own spelling."""
     if not jd:
@@ -387,6 +406,8 @@ def build(out: Path, tailoring: Path | None = None, jd: Path | None = None,
     print(result.report(spec["name"]))
     if not result.ok:
         return 3
+    for line in dash_warnings(document.content):
+        print(line, file=sys.stderr)
 
     if not compile_pdf:
         return 0

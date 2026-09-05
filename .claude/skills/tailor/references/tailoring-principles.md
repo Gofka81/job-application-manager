@@ -19,13 +19,15 @@ Binding rules for producing a job-tailored CV. Read before writing anything.
 
 ## Voice
 
-- **No em dashes.** Use a comma, a full stop, or restructure the sentence.
-  They read as machine-written, and a CV that reads as machine-written invites
-  the reader to discount everything in it. This applies to anything you write:
-  reworded bullets, `changes.md`, cover letters.
-- **No em dashes in the master either.** If one is already there, leave the
-  master alone and ask, because it is not yours to edit, but do not carry the
-  style into new wording.
+- **No em dashes in anything an employer reads** — the CV and the cover
+  letter. Use a comma, a full stop, or restructure the sentence. They read as
+  machine-written, and a CV that reads as machine-written invites the reader
+  to discount everything in it.
+- `changes.md` and the project's own documentation are exempt. They are for
+  the candidate, not the employer.
+- If the master already holds one, **leave the master alone and say so**. It
+  is not yours to edit. Do not carry the style into new wording either way;
+  `jam render` warns about every one it finds in the rendered content.
 - Plain declarative sentences. No "leveraged", "spearheaded", "passionate
   about", "proven track record". They say nothing and cost a line.
 - Lead a bullet with the verb and the object, not with a framing clause.

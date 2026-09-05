@@ -247,3 +247,29 @@ class TestAliases:
                                               "aliases": ["ETL"]}}}}
         lines = render.alias_swaps(m, render.default_tailoring(), "ETL role")
         assert lines and "Data Pipelines as ETL" in lines[0]
+
+
+class TestDashes:
+    """Only what an employer reads. changes.md and project docs are exempt."""
+
+    def test_an_em_dash_is_reported(self):
+        out = render.dash_warnings("Cut costs — by a lot")
+        assert out and "em dash" in out[0]
+
+    def test_an_en_dash_is_reported(self):
+        assert "en dash" in render.dash_warnings("2022 – 2023")[0]
+
+    def test_clean_content_says_nothing(self):
+        assert render.dash_warnings("Cut costs by 12%, using S3") == []
+
+    def test_a_hyphen_is_not_a_dash(self):
+        assert render.dash_warnings("date-partitioned Delta Lake") == []
+
+    def test_it_warns_rather_than_failing(self, master):
+        """The master may already hold them, and editing it is not the
+        renderer's call."""
+        m = {**master, "experience": [{**master["experience"][0],
+                                       "bullets": ["Did a thing — and another"]}]}
+        doc = render.render(m, profile())
+        assert render.dash_warnings(doc.content)      # noticed
+        assert "Did a thing" in doc.tex               # still rendered
