@@ -134,25 +134,29 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         return 0 if chosen is None else _take(chosen.job_id, args.yes)
 
     print(f"{len(shortlist)} of {len(jobs)} jobs\n")
-    print(f"{'#':>3}  {'fit':>4}  {'age':>4}  {'company':<24} {'title':<44} "
+    # The id, not a row number: position is not identity, and the next scan
+    # reorders the list. This one can be pasted straight into `jam take`.
+    print(f"{'id':<9} {'fit':>4}  {'age':>4}  {'company':<24} {'title':<42} "
           f"{'where':<18} {'pay':<10} src")
-    print("-" * 118)
-    for i, job in enumerate(shortlist[:args.top], 1):
+    print("-" * 122)
+    for job in shortlist[:args.top]:
         fit = f"{job.score:.1f}" if job.score is not None else "  -"
         age = f"{job.age_days}d" if job.age_days is not None else "  -"
         flag = "" if job.jd_full else " *"
-        print(f"{i:>3}  {fit:>4}  {age:>4}  {job.company[:24]:<24} "
-              f"{(job.title[:42] + flag):<44} {job.location[:18]:<18} "
+        print(f"{job.job_id[:8]:<9} {fit:>4}  {age:>4}  {job.company[:24]:<24} "
+              f"{(job.title[:40] + flag):<42} {job.location[:18]:<18} "
               f"{job.salary:<10} {job.source}")
+    print(f"\n  jam take {shortlist[0].job_id[:8]}"
+          f"        or  jam take \"{shortlist[0].company.lower()}\"")
 
     if any(not j.jd_full for j in shortlist[:args.top]):
         print("\n* the radar holds only a snippet; the full JD is read from the "
               "posting when the application is created")
     if args.why:
         print()
-        for i, job in enumerate(shortlist[:args.top], 1):
+        for job in shortlist[:args.top]:
             if job.reason:
-                print(f"{i:>3}. {job.reason[:110]}")
+                print(f"{job.job_id[:8]}  {job.reason[:104]}")
     return 0
 
 
