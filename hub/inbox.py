@@ -14,6 +14,8 @@ import json
 import os
 import urllib.error
 import urllib.request
+
+import yaml
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -62,6 +64,21 @@ class Job:
             jd_full=bool(row.get("jd_full", True)), salary=salary,
             remote=row.get("remote"), locations=row.get("locations") or [],
         )
+
+    def tier(self, priority: tuple[str, ...]) -> int:
+        """0 a priority city, 1 UK-remote, 2 everything else.
+
+        The radar's dashboard sorts by this before score, and the reason is in
+        its own comment: scarce roles would otherwise be buried under London's
+        volume. Somewhere with three postings a month never outbids somewhere
+        with three hundred on score alone.
+        """
+        places = [p.lower() for p in (self.locations or [self.location]) if p]
+        if any(city in place for place in places for city in priority):
+            return 0
+        if self.remote or any("remote" in place for place in places):
+            return 1
+        return 2
 
     @property
     def where(self) -> str:
@@ -169,6 +186,31 @@ def fetch(limit: int = 200, query: str | None = None, sort: str = "score",
     # itself answers 401 for that. Sending an ordinary one avoids a confusing
     # dead end.
     return [Job.from_row(r) for r in _call(url, base, token).get("jobs", [])]
+
+
+def priority_locations(base: str | None = None,
+                       token: str | None = None) -> tuple[str, ...]:
+    """The cities from the radar's own config.
+
+    Read from there rather than copied here: they are the radar's setting, and
+    a second copy would drift from it the first time one is edited.
+
+    Parsed with a YAML parser rather than by hand — the deployed config writes
+    the list inline (`["Edinburgh", "Glasgow"]`) while the checked-in one uses
+    block form, and a hand-rolled reader saw only the second and silently
+    returned nothing.
+    """
+    try:
+        b, t = _credentials(base, token)
+        request = urllib.request.Request(f"{b}/api/config", headers={
+            "Authorization": f"Bearer {t}",
+            "User-Agent": "job-application-hub/0.1"})
+        with urllib.request.urlopen(request, timeout=15) as response:
+            config = yaml.safe_load(response.read().decode()) or {}
+    except (RadarError, urllib.error.URLError, OSError, yaml.YAMLError):
+        return ()
+    places = config.get("priority_locations") or []
+    return tuple(str(p).strip().lower() for p in places if str(p).strip())
 
 
 def shortlist(jobs: list[Job], min_score: float = 0.0,

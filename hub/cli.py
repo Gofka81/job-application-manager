@@ -231,14 +231,27 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
         p.deep_query = ""
         return ""
 
-    # Sorting is the server's job: ordering a page here would silently drop
-    # rows the page never contained.
+    # "priority" is the radar's own default and is not a server sort: it tiers
+    # by location first — a priority city, then UK-remote, then the rest — and
+    # only sorts by score inside a tier. Done here, over the whole fetched set,
+    # which is exact while the set fits in one page.
     #
-    # There is no "posted" option because no posting carries a date: all 114
-    # arrive with posted_at null, and the radar's SQL falls back to first_seen,
-    # which makes it identical to "newest" while looking like a third choice.
+    # There is no "posted" option: no posting carries a date, so the radar's
+    # SQL falls back to first_seen and it would be "newest" under another name.
+    priority = inbox_mod.priority_locations()
+
+    def reorder(p) -> str:
+        if sort_filter.value == "priority":
+            p.all = sorted(p.base, key=lambda j: (j.tier(priority),
+                                                  -(j.score or -1)))
+            return f"{', '.join(priority).title()} first, then remote" \
+                if priority else "by location tier, then fit"
+        return reload(p)
+
     sort_filter = picker.Filter(
-        "sort", [("fit", "score"), ("newest", "seen")], reload=reload)
+        "sort", [("priority", "priority"), ("fit", "score"),
+                 ("newest", "seen")],
+        reload=reorder)
 
     filters = [
         picker.Filter("age", [("48h", 2), ("7d", 7), ("all", None)],
@@ -249,6 +262,8 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
                       keep=lambda j, v: v is None or (j.score or 0) >= v),
     ]
     _restore_filters(filters)
+    if sort_filter.value == "priority":
+        jobs = sorted(jobs, key=lambda j: (j.tier(priority), -(j.score or -1)))
 
     def score_unrated(p) -> str:
         pending = [j.job_id for j in p.rows if j.score is None][:20]
