@@ -90,6 +90,12 @@ class Job:
 
     @property
     def age_days(self) -> int | None:
+        """Days since the board published it, falling back to discovery.
+
+        The two differ whenever a posting is found late or relisted: one advert
+        published on the 1st appears twice, met on the 1st and again on the
+        6th, and only `posted_at` tells you it is the same five-day-old role.
+        """
         for value in (self.posted_at, self.first_seen):
             if not value:
                 continue

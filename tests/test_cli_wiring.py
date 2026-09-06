@@ -55,12 +55,11 @@ class TestPickFilters:
         sort = next(f for f in self.screen([job()]).filters if f.name == "sort")
         assert sort.reload is not None and sort.keep is None
 
-    def test_priority_is_the_default_and_posted_is_absent(self):
-        """Priority is the radar's own default: location tier first, score
-        inside a tier. "posted" is absent because posted_at is null on every
-        row, so it would be "newest" under another name."""
+    def test_priority_is_the_default(self):
+        """The radar's own: location tier first, score inside a tier."""
         sort = next(f for f in self.screen([job()]).filters if f.name == "sort")
-        assert [label for label, _ in sort.options] == ["priority", "fit", "newest"]
+        assert [label for label, _ in sort.options] == \
+            ["priority", "fit", "posted", "found"]
 
     def test_age_counts_unknown_as_fresh_rather_than_hiding_it(self):
         age = next(f for f in self.screen([job()]).filters if f.name == "age")

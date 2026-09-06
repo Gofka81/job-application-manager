@@ -235,9 +235,6 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
     # by location first — a priority city, then UK-remote, then the rest — and
     # only sorts by score inside a tier. Done here, over the whole fetched set,
     # which is exact while the set fits in one page.
-    #
-    # There is no "posted" option: no posting carries a date, so the radar's
-    # SQL falls back to first_seen and it would be "newest" under another name.
     priority = inbox_mod.priority_locations()
 
     def reorder(p) -> str:
@@ -250,19 +247,20 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
 
     sort_filter = picker.Filter(
         "sort", [("priority", "priority"), ("fit", "score"),
-                 ("newest", "seen")],
+                 ("posted", "posted"), ("found", "seen")],
         reload=reorder,
         hints={
             "priority": "your cities first, then remote, best fit inside each",
             "fit": "best triage score first, wherever it is",
-            "newest": "most recently found by the radar",
+            "posted": "most recently published by the employer",
+            "found": "most recently met by the radar, which can differ",
         })
 
     filters = [
         picker.Filter("age", [("48h", 2), ("7d", 7), ("all", None)],
                       keep=lambda j, v: v is None or (j.age_days or 0) <= v,
-                      hints={"48h": "found in the last two days",
-                             "7d": "the last week",
+                      hints={"48h": "published in the last two days",
+                             "7d": "published in the last week",
                              "all": "everything still open"}),
         sort_filter,
         picker.Filter("min fit", [("any", None), ("7+", 7.0), ("8+", 8.0),
@@ -326,13 +324,18 @@ def _vacancy_screen(job_id: str, on_taken=None) -> None:
                   else f"{cur}{int((lo or hi)/1000)}k")
 
     age = ""
-    posted = job.get("posted_at") or job.get("first_seen")
-    if posted:
+    posted, seen = job.get("posted_at"), job.get("first_seen")
+    when = posted or seen
+    if when:
         try:
-            days = (date.today() - date.fromisoformat(str(posted)[:10])).days
+            days = (date.today() - date.fromisoformat(str(when)[:10])).days
             age = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''} ago"
         except ValueError:
-            age = str(posted)[:10]
+            age = str(when)[:10]
+        if not posted:
+            # Falling back to discovery: saying "posted" for that would be
+            # inventing a date the row does not hold.
+            age += " — when the radar found it; no publication date on this one"
 
     seen = take_mod.already_applied(cfg.applications, company, title)
 
