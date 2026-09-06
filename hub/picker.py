@@ -42,8 +42,13 @@ class Column:
 class Picker:
     def __init__(self, rows: Sequence, columns: Sequence[Column],
                  title: str = "", search: Callable[[object], str] | None = None,
-                 detail: Callable[[object], str] | None = None):
+                 detail: Callable[[object], str] | None = None,
+                 modes: Sequence[tuple[str, Callable[[object], bool]]] | None = None):
         self.all = list(rows)
+        # Cycled with left/right. A filter the caller wants reachable without
+        # leaving the screen and rerunning the command with a flag.
+        self.modes = list(modes or [])
+        self.mode = 0
         self.columns = list(columns)
         self.title = title
         self.search = search or (lambda r: str(r))
@@ -53,11 +58,18 @@ class Picker:
         self.top = 0
 
     @property
+    def mode_label(self) -> str:
+        return self.modes[self.mode][0] if self.modes else ""
+
+    @property
     def rows(self) -> list:
-        if not self.query:
-            return self.all
-        q = self.query.lower()
-        return [r for r in self.all if q in self.search(r).lower()]
+        rows = self.all
+        if self.modes:
+            rows = [r for r in rows if self.modes[self.mode][1](r)]
+        if self.query:
+            q = self.query.lower()
+            rows = [r for r in rows if q in self.search(r).lower()]
+        return rows
 
     def run(self):
         """Returns the chosen row, or None if the user backed out."""
@@ -118,6 +130,8 @@ class Picker:
         self.top = max(min(self.top, self.cursor), self.cursor - body + 1, 0)
 
         head = f"{self.title}   {len(rows)} of {len(self.all)}"
+        if self.modes:
+            head += f"   [{self.mode_label}]"
         if self.query:
             head += f"   /{self.query}"
         screen.addnstr(0, 0, head, width - 1, curses.color_pair(2) | curses.A_BOLD)
@@ -138,37 +152,54 @@ class Picker:
                 screen.addnstr(2 + body + j, 2, chunk, width - 3,
                                curses.color_pair(3))
 
-        hint = "  ↑↓ move   enter choose   / filter   esc clear   q quit"
+        hint = "  ↑↓ move   enter choose   type to filter"
+        if self.modes:
+            hint += "   ←→ " + "/".join(label for label, _ in self.modes)
+        hint += "   esc back"
         screen.addnstr(height - 1, 0, hint[: width - 1], width - 1, curses.A_DIM)
         screen.refresh()
 
     # --- input ---------------------------------------------------------
 
     def _key(self, key):
-        """False keeps looping; anything else is the result."""
+        """False keeps looping; anything else is the result.
+
+        There are no letter shortcuts. Typing filters, and a picker that also
+        bound j/k/g/q swallowed those letters before they reached the filter —
+        so a company with a `g` in it could not be searched for at all.
+        """
         rows = self.rows
-        if key in (curses.KEY_DOWN, ord("j")):
+        if key == curses.KEY_DOWN:
             self.cursor += 1
-        elif key in (curses.KEY_UP, ord("k")):
+        elif key == curses.KEY_UP:
             self.cursor = max(0, self.cursor - 1)
         elif key == curses.KEY_NPAGE:
             self.cursor += 10
         elif key == curses.KEY_PPAGE:
             self.cursor = max(0, self.cursor - 10)
-        elif key in (curses.KEY_HOME, ord("g")):
+        elif key == curses.KEY_HOME:
             self.cursor = 0
-        elif key in (curses.KEY_END, ord("G")):
+        elif key == curses.KEY_END:
             self.cursor = len(rows) - 1
+        elif key in (curses.KEY_RIGHT, curses.KEY_LEFT) and self.modes:
+            step = 1 if key == curses.KEY_RIGHT else -1
+            self.mode = (self.mode + step) % len(self.modes)
+            self.cursor = 0
         elif key in (10, 13, curses.KEY_ENTER):
             return rows[self.cursor] if rows else None
-        elif key == ord("/"):
-            self.query = ""
-        elif key == 27:                      # esc clears the filter
-            self.query = ""
-        elif key in (ord("q"),):
+        elif key == 27:
+            # Esc clears the filter if there is one, and otherwise leaves —
+            # the same key going back one step at a time.
+            if self.query:
+                self.query = ""
+                self.cursor = 0
+            else:
+                return None
+        elif key in (3, 4):                  # ctrl-c, ctrl-d
             return None
         elif key in (curses.KEY_BACKSPACE, 127, 8):
             self.query = self.query[:-1]
+            self.cursor = 0
         elif 32 <= key < 127:
             self.query += chr(key)
             self.cursor = 0

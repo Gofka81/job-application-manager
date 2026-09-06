@@ -175,9 +175,16 @@ def _pick(jobs: list):
         picker.Column("pay", 11, lambda j: j.salary),
         picker.Column("src", 10, lambda j: j.source),
     ]
+    def within(days):
+        return lambda j: j.age_days is None or j.age_days <= days
+
     return picker.Picker(
         jobs, columns, title="job-radar inbox",
         search=lambda j: f"{j.company} {j.title} {j.location} {j.source}",
+        # Freshness first, because a week-old posting is usually already
+        # answered. Reachable without leaving the screen: the flag version
+        # meant quitting, retyping the command and losing your place.
+        modes=[("48h", within(2)), ("7d", within(7)), ("all", lambda j: True)],
         # The reason is shown beside the score rather than behind a flag: a
         # bare number looks more objective than it is, and cannot be argued
         # with. career-ops goes further and refuses to show a score it cannot
@@ -279,8 +286,6 @@ def _menu_actions(cfg) -> list[Action]:
         Action("answers", "answer bank",
                f"{answered}/{total} filled" if total else "not created yet",
                lambda: main(["answers", "--missing"])),
-        Action("check", "check CVs", "verify finished PDFs against the master",
-               lambda: main(["check", str(cfg.applications), "--max-pages", "1"])),
         Action("config", "config", "where everything points",
                lambda: main(["config"])),
         Action("quit", "quit", "", lambda: None),

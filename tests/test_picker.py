@@ -89,8 +89,18 @@ class TestChoosing:
         p._key(curses.KEY_DOWN)
         assert p._key(10).company == "Contoso"
 
-    def test_q_backs_out(self):
-        assert make()._key(ord("q")) is None
+    def test_esc_backs_out_when_there_is_no_filter(self):
+        assert make()._key(27) is None
+
+    def test_esc_clears_the_filter_before_it_leaves(self):
+        """The same key going back one step at a time."""
+        p = make()
+        p._key(ord("c"))
+        assert p._key(27) is False and p.query == ""
+        assert p._key(27) is None
+
+    def test_ctrl_c_leaves(self):
+        assert make()._key(3) is None
 
     def test_enter_on_an_empty_filter_result_returns_nothing(self):
         p = make()
@@ -161,3 +171,74 @@ class TestArrowSequences:
 
     def test_an_ordinary_key_passes_straight_through(self):
         assert self.read(ord("j")) == ord("j")
+
+
+class TestLettersReachTheFilter:
+    """The bug this class exists for: the picker bound j, k, g, G and q, so
+    those letters never reached the filter and a company containing one could
+    not be searched for."""
+
+    def type(self, text):
+        p = make()
+        for ch in text:
+            p._key(ord(ch))
+        return p
+
+    def test_g_filters_instead_of_jumping(self):
+        assert self.type("g").query == "g"
+
+    def test_q_filters_instead_of_quitting(self):
+        p = self.type("q")
+        assert p.query == "q"
+
+    def test_j_and_k_filter_instead_of_moving(self):
+        p = self.type("jk")
+        assert p.query == "jk" and p.cursor == 0
+
+    def test_a_real_company_name_with_those_letters(self):
+        p = self.type("cognizant")
+        assert p.query == "cognizant"
+
+
+class TestModes:
+    def rows_with(self, *ages):
+        @dataclass
+        class Aged:
+            age: int
+        return [Aged(a) for a in ages]
+
+    def picker_with(self, rows):
+        return picker.Picker(
+            rows, [picker.Column("age", 4, lambda r: str(r.age))],
+            modes=[("48h", lambda r: r.age <= 2),
+                   ("7d", lambda r: r.age <= 7),
+                   ("all", lambda r: True)])
+
+    def test_the_first_mode_applies_from_the_start(self):
+        p = self.picker_with(self.rows_with(1, 5, 30))
+        assert [r.age for r in p.rows] == [1]
+
+    def test_right_widens_it(self):
+        p = self.picker_with(self.rows_with(1, 5, 30))
+        p._key(curses.KEY_RIGHT)
+        assert [r.age for r in p.rows] == [1, 5] and p.mode_label == "7d"
+
+    def test_it_wraps_around(self):
+        p = self.picker_with(self.rows_with(1, 5, 30))
+        for _ in range(3):
+            p._key(curses.KEY_RIGHT)
+        assert p.mode_label == "48h"
+
+    def test_left_goes_the_other_way(self):
+        p = self.picker_with(self.rows_with(1, 5, 30))
+        p._key(curses.KEY_LEFT)
+        assert p.mode_label == "all" and len(p.rows) == 3
+
+    def test_a_mode_and_a_filter_apply_together(self):
+        p = self.picker_with(self.rows_with(1, 5, 30))
+        p._key(curses.KEY_LEFT)          # all
+        p._key(ord("3"))                 # matches "30"
+        assert [r.age for r in p.rows] == [30]
+
+    def test_no_modes_means_no_filtering_by_mode(self):
+        assert len(make().rows) == 3
