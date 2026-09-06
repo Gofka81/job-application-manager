@@ -508,3 +508,22 @@ class TestExtraKeys:
         p = self.make([])
         p._key(21)
         assert p.message == "" and p.query == ""
+
+
+class TestHints:
+    """An option whose meaning is not obvious from its name is one people
+    leave alone."""
+
+    def make(self):
+        return picker.Filter("sort", [("priority", "p"), ("fit", "s")],
+                             hints={"priority": "your cities first",
+                                    "fit": "best score first"})
+
+    def test_the_hint_follows_the_selected_option(self):
+        f = self.make()
+        assert f.hint == "your cities first"
+        f.index = 1
+        assert f.hint == "best score first"
+
+    def test_an_option_without_one_says_nothing(self):
+        assert picker.Filter("x", [("a", 1)]).hint == ""

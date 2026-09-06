@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import curses
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Sequence
 
 
@@ -217,6 +217,9 @@ class Picker:
                 current = f"{current}   {chunk}".strip()
         if current:
             lines.append(current)
+        focused = self.filters[self.focus]
+        if focused.hint:
+            lines.append(f"{focused.name} · {focused.label} — {focused.hint}")
         lines.append("←→ field · ↑↓ value · esc close")
         for i, line in enumerate(lines):
             style = curses.A_DIM if i == len(lines) - 1 else curses.color_pair(2)
@@ -393,6 +396,13 @@ class Filter:
     index: int = 0
     keep: Callable[[object, object], bool] | None = None
     reload: Callable[[object], object] | None = None
+    #: One line per option, shown while the field is focused. An option whose
+    #: meaning is not obvious from its name is one people leave alone.
+    hints: dict = field(default_factory=dict)
+
+    @property
+    def hint(self) -> str:
+        return self.hints.get(self.label, "")
 
     @property
     def value(self):

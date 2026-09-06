@@ -251,15 +251,27 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
     sort_filter = picker.Filter(
         "sort", [("priority", "priority"), ("fit", "score"),
                  ("newest", "seen")],
-        reload=reorder)
+        reload=reorder,
+        hints={
+            "priority": "your cities first, then remote, best fit inside each",
+            "fit": "best triage score first, wherever it is",
+            "newest": "most recently found by the radar",
+        })
 
     filters = [
         picker.Filter("age", [("48h", 2), ("7d", 7), ("all", None)],
-                      keep=lambda j, v: v is None or (j.age_days or 0) <= v),
+                      keep=lambda j, v: v is None or (j.age_days or 0) <= v,
+                      hints={"48h": "found in the last two days",
+                             "7d": "the last week",
+                             "all": "everything still open"}),
         sort_filter,
         picker.Filter("min fit", [("any", None), ("7+", 7.0), ("8+", 8.0),
                                   ("9", 9.0)],
-                      keep=lambda j, v: v is None or (j.score or 0) >= v),
+                      keep=lambda j, v: v is None or (j.score or 0) >= v,
+                      hints={"any": "including the ones with no score yet",
+                             "7+": "a reasonable match and above",
+                             "8+": "a strong match",
+                             "9": "the radar's best only"}),
     ]
     _restore_filters(filters)
     if sort_filter.value == "priority":
