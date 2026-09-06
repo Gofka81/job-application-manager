@@ -7,7 +7,11 @@ paths:
   data: data
   # Application folders live wherever the thing producing CVs puts them.
   # While that is tailor-cv (D73), this points outside the repository.
-  applications: ~/Developer/DataEng/cv-tailor/applications
+  # Applications and the LaTeX master are copied here so everything about a
+  # search lives under data/, which is gitignored and hook-protected (D56).
+  # Point tailor-cv at it when working in this repo:
+  #   export TAILOR_CV_HOME=\$PWD/data
+  applications: data/applications
   templates: templates
 
 # D15 — both provisional. UK replies come later than the 14/21 norm of
