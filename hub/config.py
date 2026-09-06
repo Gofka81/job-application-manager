@@ -20,6 +20,7 @@ class Thresholds:
     stale_days: int
     ghosted_days: int
     recalibrate_after_responses: int
+    cv_max_pages: int = 1
 
 
 @dataclass(frozen=True)

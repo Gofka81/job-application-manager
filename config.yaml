@@ -22,6 +22,9 @@ thresholds:
   # D16: once 30+ times-to-first-response exist, set ghosted_days to their p90
   # and record the change in changes.jsonl.
   recalibrate_after_responses: 30
+  # What a CV is allowed to run to. The tailoring skill targets this and the
+  # applications list calls anything longer unfinished rather than ready.
+  cv_max_pages: 1
 
 # D48 — sample floors. "not enough data" is a first-class output.
 detector:
@@ -43,14 +46,12 @@ followup:
 factgate:
   allow: []
 
-# Which model writes the CV. Left unset so the CLI's own default applies,
-# which is Opus. That is what the one measured run used, and it produced a CV
-# that passed both gates with an honest gaps section — a cheaper model might
-# do as well, but nobody has checked, and quietly downgrading the thing that
-# decides what may be claimed is not a change to make on a hunch.
+# Which model writes the CV. Pinned rather than left to the CLI's default:
+# the default happens to be Opus today, but a default is not a decision, and
+# this one decides what may be claimed on a document going to an employer.
 #
-# `jam tailor` prints what the run cost. On a subscription that figure is an
+# `jam tailor` prints what a run cost. On a subscription that figure is an
 # equivalent counted against usage limits rather than money charged; with an
 # ANTHROPIC_API_KEY it is money. Override per run with `--model sonnet`.
 agent:
-  model:
+  model: opus

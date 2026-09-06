@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from hub import (agent, answerbank, backfill, bootstrap, check as check_mod, config,
+from hub import (agent, answerbank, atscheck, backfill, bootstrap, check as check_mod, config,
                  coverage, inbox as inbox_mod, picker, render,
                  openurl, submit as submit_mod, take as take_mod)
 
@@ -530,17 +530,30 @@ def _stage(record: dict) -> tuple[str, str]:
     Worked out from the folder rather than stored: a stage field would be a
     second truth to keep in step with the files that actually exist.
 
+    A file existing is not the same as it being usable. One application read
+    "ready" on a two-page CV that the page budget rejects, which is the kind
+    of quiet wrongness that only shows up when someone tries to send it — so
+    the PDF is checked, not just counted.
+
     `jam` cannot run the next step itself — the deterministic half is not
     allowed to call a model (D21) — so it names it and you run it.
     """
     folder = record["_folder"]
+    app_id = record.get("app_id")
     if record.get("submitted_at"):
         return "submitted", ""
-    if not (folder / "cv.pdf").exists():
-        return "no cv", f"/tailor {record.get('app_id')}"
-    if not (folder / "coverage.yaml").exists():
-        return "no coverage", f"/tailor {record.get('app_id')}"
-    return "ready", f"/apply {record.get('app_id')}"
+    pdf = folder / "cv.pdf"
+    if not pdf.exists():
+        return "no cv", f"/tailor {app_id}"
+    pages = atscheck.page_count(pdf)
+    budget = config.load().thresholds.cv_max_pages
+    if pages and budget and pages > budget:
+        return f"{pages} pages", f"/tailor {app_id}"
+    for name, missing in (("coverage.yaml", "no coverage"),
+                          ("changes.md", "no notes")):
+        if not (folder / name).exists():
+            return missing, f"/tailor {app_id}"
+    return "ready", f"/apply {app_id}"
 
 
 def _application_detail(record: dict) -> list[str]:
@@ -561,11 +574,42 @@ def _application_detail(record: dict) -> list[str]:
     ]
     if action:
         lines += ["", f"  next       {action}"]
+    lines += _detail_checks(folder)
     jd = folder / "jd.md"
     if jd.exists():
         text = " ".join(jd.read_text().split())
         lines += ["", "  JD"] + [f"    {chunk}" for chunk in _chunks(text, 96)][:14]
     return lines
+
+
+def _detail_checks(folder: Path) -> list[str]:
+    """What the built CV actually scores, next to the stage that summarises it.
+
+    The list can only say one thing per row, so a CV that is both too long and
+    thin on coverage shows as "2 pages". The number that got it there belongs
+    here, where there is room for it, rather than in a separate command.
+    """
+    lines = []
+    pdf = folder / "cv.pdf"
+    if pdf.exists():
+        pages = atscheck.page_count(pdf)
+        budget = config.load().thresholds.cv_max_pages
+        verdict = "" if pages is None or pages <= budget else f" (over {budget})"
+        lines.append(f"  pages      {pages if pages else '?'}{verdict}")
+    path = folder / "coverage.yaml"
+    if path.exists():
+        try:
+            s = coverage.summarize(coverage.load(path))
+        except (KeyError, TypeError, yaml.YAMLError):
+            lines.append("  coverage   unreadable")
+        else:
+            pct = f"{s.share:.0%}" if s.share is not None else "n/a"
+            lines.append(f"  coverage   required {s.required_covered:g}/"
+                         f"{s.required} ({pct}) · preferred "
+                         f"{s.preferred_covered:g}/{s.preferred}")
+            for text in (s.missing_required or [])[:6]:
+                lines.append(f"    missing  {text[:80]}")
+    return ["", *lines] if lines else []
 
 
 def _chunks(text: str, width: int) -> list[str]:

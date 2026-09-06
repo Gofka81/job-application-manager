@@ -173,6 +173,8 @@ class TestStage:
     """Worked out from the folder rather than stored: a stage field would be a
     second truth to keep in step with the files that actually exist."""
 
+    BUILT = ["cv.pdf", "coverage.yaml", "changes.md"]
+
     def record(self, tmp_path, submitted=None, files=()):
         folder = tmp_path / "2026-09-06--northwind--data-engineer"
         folder.mkdir(parents=True, exist_ok=True)
@@ -190,18 +192,87 @@ class TestStage:
         stage, action = cli._stage(self.record(tmp_path, files=["cv.pdf"]))
         assert stage == "no coverage" and action.startswith("/tailor")
 
-    def test_both_present_means_it_is_ready_to_fill(self, tmp_path):
+    def test_notes_are_part_of_a_finished_tailoring(self, tmp_path):
         stage, action = cli._stage(
             self.record(tmp_path, files=["cv.pdf", "coverage.yaml"]))
+        assert stage == "no notes" and action.startswith("/tailor")
+
+    def test_everything_present_means_it_is_ready_to_fill(self, tmp_path):
+        stage, action = cli._stage(self.record(tmp_path, files=self.BUILT))
         assert stage == "ready" and action.startswith("/apply")
+
+    def test_a_cv_over_the_page_budget_is_not_ready(self, tmp_path, monkeypatch):
+        """A file existing is not the same as it being usable. One application
+        read "ready" on a two-page CV that no recruiter would ever see, because
+        the stage asked whether the PDF was there and not whether it passed."""
+        monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 2)
+        stage, action = cli._stage(self.record(tmp_path, files=self.BUILT))
+        assert stage == "2 pages" and action.startswith("/tailor")
+
+    def test_an_unreadable_pdf_does_not_invent_a_verdict(self, tmp_path,
+                                                        monkeypatch):
+        """No page count is not a failing page count."""
+        monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: None)
+        stage, _ = cli._stage(self.record(tmp_path, files=self.BUILT))
+        assert stage == "ready"
 
     def test_a_submitted_application_needs_nothing(self, tmp_path):
         stage, action = cli._stage(self.record(
             tmp_path, submitted="2026-09-06T10:00:00+00:00",
-            files=["cv.pdf", "coverage.yaml"]))
+            files=self.BUILT))
         assert stage == "submitted" and action == ""
 
     def test_submitted_wins_over_a_missing_file(self, tmp_path):
         """It already went out; what is on disk cannot un-send it."""
         stage, _ = cli._stage(self.record(tmp_path, submitted="2026-09-06"))
         assert stage == "submitted"
+
+
+class TestDetailChecks:
+    """The stage column has room for one word; the detail has room for the
+    number behind it, so "2 pages" can be read without a second command."""
+
+    def folder(self, tmp_path, coverage=None):
+        folder = tmp_path / "2026-09-06--northwind--data-engineer"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "cv.pdf").write_text("x")
+        if coverage is not None:
+            (folder / "coverage.yaml").write_text(coverage)
+        return folder
+
+    DOC = """
+requirements:
+  - {text: Kafka, weight: required, status: missing}
+  - {text: dbt, weight: required, status: covered}
+  - {text: Athena, weight: preferred, status: partial}
+"""
+
+    def test_it_says_how_far_over_the_budget_the_cv_runs(self, tmp_path,
+                                                         monkeypatch):
+        monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 3)
+        lines = cli._detail_checks(self.folder(tmp_path))
+        assert any("3 (over 1)" in line for line in lines)
+
+    def test_a_cv_inside_the_budget_carries_no_verdict(self, tmp_path,
+                                                       monkeypatch):
+        monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 1)
+        lines = cli._detail_checks(self.folder(tmp_path))
+        assert any(line.strip() == "pages      1" for line in lines)
+
+    def test_it_counts_coverage_and_names_what_is_missing(self, tmp_path,
+                                                          monkeypatch):
+        monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 1)
+        lines = cli._detail_checks(self.folder(tmp_path, self.DOC))
+        assert any("required 1/2 (50%)" in line for line in lines)
+        assert any("missing  Kafka" in line for line in lines)
+
+    def test_a_damaged_coverage_file_does_not_take_the_screen_down(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 1)
+        lines = cli._detail_checks(self.folder(tmp_path, "requirements: 7"))
+        assert any("unreadable" in line for line in lines)
+
+    def test_nothing_built_yet_adds_nothing(self, tmp_path):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert cli._detail_checks(empty) == []
