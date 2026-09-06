@@ -77,16 +77,16 @@ class Picker:
     def __init__(self, rows: Sequence, columns: Sequence[Column],
                  title: str = "", search: Callable[[object], str] | None = None,
                  detail: Callable[[object], str] | None = None,
-                 modes: Sequence[tuple[str, Callable[[object], bool]]] | None = None,
                  deep: Callable[[str], Sequence] | None = None,
                  deep_label: str = "deep search",
                  filterable: bool = True,
-                 keys: dict[int, tuple[str, Callable[["Picker"], str]]] | None = None):
+                 keys: dict[int, tuple[str, Callable[["Picker"], str]]] | None = None,
+                 gate: Callable[[object], bool] | None = None,
+                 filters: Sequence[Filter] | None = None,
+                 extra_label: Callable[["Picker"], str] | None = None):
         self.all = list(rows)
         # Cycled with left/right. A filter the caller wants reachable without
         # leaving the screen and rerunning the command with a flag.
-        self.modes = list(modes or [])
-        self.mode = 0
         # Typing filters what is on screen. Some of what you want to search is
         # not on screen — a job description is kilobytes and never travels in a
         # list — so tab hands the same text to something that can look deeper.
@@ -102,6 +102,16 @@ class Picker:
         # whose text contains it.
         self.keys = dict(keys or {})
         self.message = ""
+        # A predicate the caller can flip from a key, kept outside `modes`
+        # because it combines with them rather than replacing them.
+        self.gate = gate
+        self.extra_label = extra_label
+        # A bar rather than a key per filter: the radar's dashboard puts them
+        # behind one control with a count, and a screen with six control keys
+        # is one nobody remembers.
+        self.filters = list(filters or [])
+        self.filters_open = False
+        self.focus = 0
         self.columns = list(columns)
         self.title = title
         self.search = search or (lambda r: str(r))
@@ -111,18 +121,16 @@ class Picker:
         self.top = 0
 
     @property
-    def mode_label(self) -> str:
-        return self.modes[self.mode][0] if self.modes else ""
-
-    @property
     def searching(self) -> bool:
         return bool(self.deep_query)
 
     @property
     def rows(self) -> list:
         rows = self.all
-        if self.modes:
-            rows = [r for r in rows if self.modes[self.mode][1](r)]
+        if self.gate:
+            rows = [r for r in rows if self.gate(r)]
+        for f in self.filters:
+            rows = [r for r in rows if f.keeps(r)]
         if self.query:
             q = self.query.lower()
             rows = [r for r in rows if q in self.search(r).lower()]
@@ -177,6 +185,45 @@ class Picker:
             if result is not False:
                 return result
 
+    def _filter_key(self, key):
+        """While the bar is open the arrows belong to it, not to the list."""
+        if key in (27, 6, 10, 13, curses.KEY_ENTER):
+            self.filters_open = False
+            return False
+        if key == curses.KEY_RIGHT:
+            self.focus = (self.focus + 1) % len(self.filters)
+        elif key == curses.KEY_LEFT:
+            self.focus = (self.focus - 1) % len(self.filters)
+        elif key in (curses.KEY_DOWN, curses.KEY_UP):
+            f = self.filters[self.focus]
+            step = 1 if key == curses.KEY_DOWN else -1
+            f.index = (f.index + step) % len(f.options)
+            if f.reload:
+                self.message = f.reload(self) or ""
+            self.cursor = 0
+        elif key in (3, 4):
+            return None
+        return False
+
+    def _draw_filters(self, screen, height: int, width: int) -> int:
+        """Returns how many lines the bar took."""
+        rendered = [f.render(i == self.focus) for i, f in enumerate(self.filters)]
+        lines, current = [], ""
+        for chunk in rendered:
+            if len(current) + len(chunk) + 3 > width - 4:
+                lines.append(current)
+                current = chunk
+            else:
+                current = f"{current}   {chunk}".strip()
+        if current:
+            lines.append(current)
+        lines.append("←→ field · ↑↓ value · esc close")
+        for i, line in enumerate(lines):
+            style = curses.A_DIM if i == len(lines) - 1 else curses.color_pair(2)
+            screen.addnstr(height - 1 - len(lines) + i, 2, line[: width - 3],
+                           width - 3, style)
+        return len(lines)
+
     def _deepen(self) -> None:
         self.deep_query = self.query
         try:
@@ -191,8 +238,9 @@ class Picker:
         screen.erase()
         height, width = screen.getmaxyx()
         rows = self.rows
+        bar = self._draw_filters(screen, height, width) if self.filters_open else 0
         # Two lines of chrome at the top, two at the bottom.
-        body = max(1, height - 5 - (3 if self.detail else 0))
+        body = max(1, height - 5 - bar - (3 if self.detail else 0))
         self.cursor = max(0, min(self.cursor, len(rows) - 1)) if rows else 0
         self.top = max(min(self.top, self.cursor), self.cursor - body + 1, 0)
 
@@ -200,8 +248,11 @@ class Picker:
         head = f"{self.title}   {len(rows)} of {len(self.all)}"
         if self.searching:
             head += f"   {self.deep_label}: {self.deep_query}"
-        if self.modes:
-            head += f"   [{self.mode_label}]"
+        active = [f.summary() for f in self.filters if f.summary()]
+        if active:
+            head += "   " + " · ".join(active)
+        if self.extra_label and (extra := self.extra_label(self)):
+            head += f"   [{extra}]"
         if self.query:
             head += f"   /{self.query}"
         screen.addnstr(0, 0, head, width - 1, curses.color_pair(2) | curses.A_BOLD)
@@ -225,17 +276,23 @@ class Picker:
                 screen.addnstr(2 + body + j, 2, chunk, width - 3,
                                curses.color_pair(3))
 
-        hint = "  ↑↓ move   enter choose"
+        # Kept terse because it has to survive an 80-column terminal; the
+        # current sort and filters are shown in the title instead of here.
+        parts = ["↑↓ enter"]
         if self.filterable:
-            hint += "   type to filter"
+            parts.append("type filter")
         if self.deep:
-            hint += f"   tab {self.deep_label}"
-        for label, _ in self.keys.values():
-            hint += f"   {label}"
-        if self.modes:
-            hint += "   ←→ " + "/".join(label for label, _ in self.modes)
-        hint += "   esc back"
-        screen.addnstr(height - 1, 0, hint[: width - 1], width - 1, curses.A_DIM)
+            parts.append(f"tab {self.deep_label}")
+        parts += [label for label, _ in self.keys.values()]
+        if self.filters:
+            parts.append("^f filters")
+        parts.append("esc")
+        hint = "  " + " · ".join(parts)
+        if self.filters_open:
+            hint = ""
+        if hint:
+            screen.addnstr(height - 1, 0, hint[: width - 1], width - 1,
+                           curses.A_DIM)
         screen.refresh()
 
     # --- input ---------------------------------------------------------
@@ -248,7 +305,12 @@ class Picker:
         so a company with a `g` in it could not be searched for at all.
         """
         rows = self.rows
-        if key == curses.KEY_DOWN:
+        if self.filters_open:
+            return self._filter_key(key)
+        if key == 6 and self.filters:            # ctrl-f
+            self.filters_open = True
+            self.message = ""
+        elif key == curses.KEY_DOWN:
             self.cursor += 1
         elif key == curses.KEY_UP:
             self.cursor = max(0, self.cursor - 1)
@@ -260,10 +322,6 @@ class Picker:
             self.cursor = 0
         elif key == curses.KEY_END:
             self.cursor = len(rows) - 1
-        elif key in (curses.KEY_RIGHT, curses.KEY_LEFT) and self.modes:
-            step = 1 if key == curses.KEY_RIGHT else -1
-            self.mode = (self.mode + step) % len(self.modes)
-            self.cursor = 0
         elif key in (10, 13, curses.KEY_ENTER):
             return rows[self.cursor] if rows else None
         elif key in self.keys:
@@ -320,6 +378,43 @@ def view(lines: Sequence[str], title: str = "") -> None:
     rows = list(lines) or ["nothing to show"]
     Picker(rows, [Column("", 200, lambda line: line, flex=True)], title=title,
            search=lambda line: line).run()
+
+
+@dataclass
+class Filter:
+    """One control in the filter bar.
+
+    `keep` narrows the rows here; `reload` means the choice has to be fetched
+    again — sorting is done by the server, because ordering a page in the
+    client silently drops rows the page never contained.
+    """
+    name: str
+    options: Sequence[tuple[str, object]]
+    index: int = 0
+    keep: Callable[[object, object], bool] | None = None
+    reload: Callable[[object], object] | None = None
+
+    @property
+    def value(self):
+        return self.options[self.index][1]
+
+    @property
+    def label(self) -> str:
+        return self.options[self.index][0]
+
+    def keeps(self, row) -> bool:
+        return True if self.keep is None else self.keep(row, self.value)
+
+    def summary(self) -> str:
+        """Shown in the title only when it is not the default."""
+        return "" if self.index == 0 else f"{self.name}: {self.label}"
+
+    def render(self, focused: bool) -> str:
+        out = [f"{self.name} "]
+        for i, (label, _) in enumerate(self.options):
+            out.append(f"[{label}]" if i == self.index else f" {label} ")
+        line = "".join(out)
+        return f"▸{line}" if focused else f" {line}"
 
 
 @dataclass

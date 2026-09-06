@@ -6,6 +6,7 @@ skill, not here.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import re
@@ -170,6 +171,9 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     return 0
 
 
+SORTS = [("fit", "score"), ("newest", "seen"), ("posted", "posted")]
+
+
 def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
           limit=300):
     def age(job):
@@ -179,57 +183,77 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
         picker.Column("fit", 4, lambda j: f"{j.score:.1f}" if j.score is not None else "-", right=True),
         picker.Column("age", 4, age, right=True),
         picker.Column("company", 22, lambda j: j.company),
-        picker.Column("title", 40, lambda j: j.title),
-        picker.Column("where", 16, lambda j: j.location),
+        picker.Column("title", 38, lambda j: j.title, flex=True),
+        picker.Column("where", 22, lambda j: j.where),
         picker.Column("pay", 11, lambda j: j.salary),
         picker.Column("src", 10, lambda j: j.source),
     ]
-    def within(days):
-        return lambda j: j.age_days is None or j.age_days <= days
 
     def deep(query: str):
         """The radar searches the JD text server-side; the list payload never
         carries it, so `spark` cannot be found by filtering what is on screen."""
-        found = inbox_mod.fetch(limit=limit, query=query)
+        found = inbox_mod.fetch(limit=limit, query=query, sort=sort_filter.value)
         return inbox_mod.shortlist(found, min_score, statuses, max_age)
 
-    def score_unrated(p) -> str:
-        pending = [j.job_id for j in p.rows if j.score is None][:20]
-        if not pending:
-            return "everything shown already has a score"
+    def reload(p) -> str:
         try:
-            inbox_mod.triage(pending)
-        except inbox_mod.RadarError as exc:
-            return str(exc)
-        return (f"queued {len(pending)} for scoring — the radar triages "
-                f"overnight, this jumps the queue")
-
-    def refresh(p) -> str:
-        try:
-            found = inbox_mod.fetch(limit=limit)
+            found = inbox_mod.fetch(limit=limit, sort=sort_filter.value)
         except inbox_mod.RadarError as exc:
             return str(exc)
         p.base = inbox_mod.shortlist(found, min_score, statuses, max_age)
         p.all = list(p.base)
         p.deep_query = ""
-        return f"refreshed — {len(p.all)} vacancies"
+        return ""
+
+    # Sorting is the server's job: ordering a page here would silently drop
+    # rows the page never contained.
+    sort_filter = picker.Filter(
+        "sort", [("fit", "score"), ("newest", "seen"), ("posted", "posted")],
+        reload=reload)
+
+    places = collections.Counter()
+    for job in jobs:
+        for place in (job.locations or []):
+            places[place] += 1
+    place_options = [("any", None)] + [(p, p) for p, _ in places.most_common(6)]
+
+    sources = [("any", None)] + [(s, s) for s, _ in
+                                 collections.Counter(j.source for j in jobs).most_common(6)]
+
+    filters = [
+        picker.Filter("age", [("48h", 2), ("7d", 7), ("all", None)],
+                      keep=lambda j, v: v is None or (j.age_days or 0) <= v),
+        sort_filter,
+        picker.Filter("fit", [("any", None), ("7+", 7.0), ("8+", 8.0), ("9", 9.0)],
+                      keep=lambda j, v: v is None or (j.score or 0) >= v),
+        picker.Filter("where", place_options,
+                      keep=lambda j, v: v is None or v in (j.locations or [])),
+        picker.Filter("source", sources,
+                      keep=lambda j, v: v is None or j.source == v),
+    ]
+
+    def score_unrated(p) -> str:
+        pending = [j.job_id for j in p.rows if j.score is None][:20]
+        if not pending:
+            return "everything here already has a score"
+        try:
+            inbox_mod.triage(pending)
+        except inbox_mod.RadarError as exc:
+            return str(exc)
+        return (f"sent {len(pending)} to be scored now, rather than waiting "
+                f"for the radar's overnight run")
 
     return picker.Picker(
         jobs, columns, title="job-radar inbox",
-        deep=deep, deep_label="in JD",
-        keys={20: ("^t score unrated", score_unrated),
-              18: ("^r refresh", refresh)},
         search=lambda j: f"{j.company} {j.title} {j.location} {j.source}",
-        # Freshness first, because a week-old posting is usually already
-        # answered. Reachable without leaving the screen: the flag version
-        # meant quitting, retyping the command and losing your place.
-        modes=[("48h", within(2)), ("7d", within(7)), ("all", lambda j: True)],
-        # The reason is shown beside the score rather than behind a flag: a
-        # bare number looks more objective than it is, and cannot be argued
-        # with. career-ops goes further and refuses to show a score it cannot
-        # explain.
+        deep=deep, deep_label="in JD",
+        filters=filters,
+        keys={20: ("^t score", score_unrated),
+              18: ("^r reload", lambda p: reload(p) or "reloaded")},
+        # The reason sits beside the score rather than behind a flag: a bare
+        # number looks more objective than it is and cannot be argued with.
         detail=lambda j: j.reason,
-    ).run()
+    )
 
 
 def _vacancy_screen(job_id: str, on_taken=None) -> None:

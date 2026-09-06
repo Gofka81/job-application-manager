@@ -200,48 +200,96 @@ class TestLettersReachTheFilter:
         assert p.query == "cognizant"
 
 
-class TestModes:
-    def rows_with(self, *ages):
-        @dataclass
-        class Aged:
-            age: int
-        return [Aged(a) for a in ages]
+class TestFilterBar:
+    """One bar rather than a key per filter. A screen with six control keys is
+    one nobody remembers, which is why the radar's own dashboard puts them
+    behind a single control with a count."""
 
-    def picker_with(self, rows):
-        return picker.Picker(
-            rows, [picker.Column("age", 4, lambda r: str(r.age))],
-            modes=[("48h", lambda r: r.age <= 2),
-                   ("7d", lambda r: r.age <= 7),
-                   ("all", lambda r: True)])
+    @dataclass
+    class Row:
+        age: int
+        src: str
 
-    def test_the_first_mode_applies_from_the_start(self):
-        p = self.picker_with(self.rows_with(1, 5, 30))
+    ROWS = [Row(1, "linkedin"), Row(5, "indeed"), Row(30, "reed")]
+
+    def make(self, reload=None):
+        filters = [
+            picker.Filter("age", [("48h", 2), ("7d", 7), ("all", None)],
+                          keep=lambda r, v: v is None or r.age <= v,
+                          reload=reload),
+            picker.Filter("source", [("any", None), ("linkedin", "linkedin")],
+                          keep=lambda r, v: v is None or r.src == v),
+        ]
+        return picker.Picker(self.ROWS, [picker.Column("a", 6, lambda r: str(r.age))],
+                             filters=filters)
+
+    def test_the_first_option_applies_from_the_start(self):
+        assert [r.age for r in self.make().rows] == [1]
+
+    def test_the_bar_opens_on_ctrl_f(self):
+        p = self.make()
+        p._key(6)
+        assert p.filters_open
+
+    def test_while_it_is_open_the_arrows_belong_to_it(self):
+        p = self.make()
+        p._key(6)
+        p._key(curses.KEY_DOWN)
+        assert p.cursor == 0 and [r.age for r in p.rows] == [1, 5]
+
+    def test_left_and_right_move_between_fields(self):
+        p = self.make()
+        p._key(6)
+        p._key(curses.KEY_RIGHT)
+        p._key(curses.KEY_DOWN)
+        assert p.filters[1].label == "linkedin"
+
+    def test_filters_combine_rather_than_replace(self):
+        p = self.make()
+        p._key(6)
+        p._key(curses.KEY_DOWN)          # age 7d
+        p._key(curses.KEY_RIGHT)
+        p._key(curses.KEY_DOWN)          # source linkedin
         assert [r.age for r in p.rows] == [1]
 
-    def test_right_widens_it(self):
-        p = self.picker_with(self.rows_with(1, 5, 30))
-        p._key(curses.KEY_RIGHT)
-        assert [r.age for r in p.rows] == [1, 5] and p.mode_label == "7d"
+    def test_esc_closes_the_bar_and_keeps_the_choices(self):
+        p = self.make()
+        p._key(6)
+        p._key(curses.KEY_DOWN)
+        p._key(27)
+        assert not p.filters_open and [r.age for r in p.rows] == [1, 5]
 
-    def test_it_wraps_around(self):
-        p = self.picker_with(self.rows_with(1, 5, 30))
+    def test_the_arrows_go_back_to_the_list_once_it_is_closed(self):
+        p = self.make()
+        p._key(6)
+        p._key(27)
+        p._key(curses.KEY_DOWN)
+        assert p.cursor == 1
+
+    def test_values_wrap_around(self):
+        p = self.make()
+        p._key(6)
         for _ in range(3):
-            p._key(curses.KEY_RIGHT)
-        assert p.mode_label == "48h"
+            p._key(curses.KEY_DOWN)
+        assert p.filters[0].label == "48h"
 
-    def test_left_goes_the_other_way(self):
-        p = self.picker_with(self.rows_with(1, 5, 30))
-        p._key(curses.KEY_LEFT)
-        assert p.mode_label == "all" and len(p.rows) == 3
+    def test_a_choice_that_needs_refetching_says_so(self):
+        seen = []
+        p = self.make(reload=lambda pk: seen.append("fetched") or "")
+        p._key(6)
+        p._key(curses.KEY_DOWN)
+        assert seen == ["fetched"]
 
-    def test_a_mode_and_a_filter_apply_together(self):
-        p = self.picker_with(self.rows_with(1, 5, 30))
-        p._key(curses.KEY_LEFT)          # all
-        p._key(ord("3"))                 # matches "30"
-        assert [r.age for r in p.rows] == [30]
+    def test_only_a_changed_filter_shows_in_the_title(self):
+        p = self.make()
+        assert p.filters[0].summary() == ""
+        p.filters[0].index = 1
+        assert p.filters[0].summary() == "age: 7d"
 
-    def test_no_modes_means_no_filtering_by_mode(self):
-        assert len(make().rows) == 3
+    def test_the_bar_renders_the_focused_field(self):
+        p = self.make()
+        assert p.filters[0].render(True).startswith("▸")
+        assert p.filters[0].render(False).startswith(" ")
 
 
 class TestFit:

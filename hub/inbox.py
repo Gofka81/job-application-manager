@@ -38,6 +38,8 @@ class Job:
     description: str
     jd_full: bool
     salary: str
+    remote: bool | None
+    locations: list
 
     @classmethod
     def from_row(cls, row: dict) -> "Job":
@@ -58,7 +60,16 @@ class Job:
             first_seen=row.get("first_seen"),
             description=row.get("description") or "",
             jd_full=bool(row.get("jd_full", True)), salary=salary,
+            remote=row.get("remote"), locations=row.get("locations") or [],
         )
+
+    @property
+    def where(self) -> str:
+        """Remote is a column of its own in the radar; showing it beside the
+        place saves reading a location string to find out."""
+        if self.remote:
+            return f"remote · {self.location}" if self.location else "remote"
+        return self.location
 
     @property
     def age_days(self) -> int | None:
