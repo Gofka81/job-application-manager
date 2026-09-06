@@ -73,7 +73,11 @@ gates. It writes decisions; `jam` writes the PDF.
 The CV itself is still produced by the standalone `tailor-cv` skill, which
 works; this repository checks the result rather than replacing it (D73).
 
+Run `jam` with no arguments for a menu; everything below is also a command
+in its own right.
+
 ```sh
+jam                                         # menu: arrow keys all the way down
 jam inbox                                   # what job-radar found, arrow keys to pick
 jam take "data idols"                       # turn a vacancy into an application
 jam check ~/CV/applications --max-pages 1   # check finished PDFs against the master

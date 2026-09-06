@@ -6,8 +6,10 @@ skill, not here.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -242,6 +244,94 @@ def _take(job_id: str, assume_yes: bool) -> int:
     return 0
 
 
+@dataclass
+class Action:
+    key: str
+    label: str
+    hint: str
+    run: object
+
+
+def _menu_actions(cfg) -> list[Action]:
+    """Built fresh each time so the counts are current.
+
+    Nothing here touches the network: the menu has to appear instantly, and
+    the radar is only called once the inbox is actually chosen.
+    """
+    applications = (sorted(p.name for p in cfg.applications.glob("*/application.json"))
+                    if cfg.applications.exists() else [])
+    bank = cfg.data / "answer-bank.yaml"
+    answered = total = 0
+    if bank.exists():
+        entries = yaml.safe_load(bank.read_text()) or []
+        total = len(entries)
+        answered = sum(1 for e in entries
+                       if e.get("value") is not None or e.get("since"))
+
+    return [
+        Action("inbox", "inbox", "vacancies from job-radar",
+               lambda: main(["inbox"])),
+        Action("apps", "applications",
+               f"{len(applications)} in data/applications",
+               lambda: _list_applications(cfg)),
+        Action("gaps", "gaps", "what the market wants that you lack",
+               lambda: main(["gaps", "--terms", "--min-count", "3"])),
+        Action("answers", "answer bank",
+               f"{answered}/{total} filled" if total else "not created yet",
+               lambda: main(["answers", "--missing"])),
+        Action("check", "check CVs", "verify finished PDFs against the master",
+               lambda: main(["check", str(cfg.applications), "--max-pages", "1"])),
+        Action("config", "config", "where everything points",
+               lambda: main(["config"])),
+        Action("quit", "quit", "", lambda: None),
+    ]
+
+
+def _list_applications(cfg) -> int:
+    rows = sorted(cfg.applications.glob("*/application.json"))
+    if not rows:
+        print("no applications yet — start from the inbox")
+        return 0
+    print(f"{len(rows)} application(s)\n")
+    for path in rows:
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        submitted = record.get("submitted_at") or "not submitted"
+        print(f"  {record.get('app_id')}")
+        print(f"    {record.get('company')} · {record.get('title')}")
+        print(f"    {record.get('channel')} · fit {record.get('radar_score')} "
+              f"· {submitted}")
+    return 0
+
+
+def cmd_menu(args: argparse.Namespace) -> int:
+    """One entry point, so nothing has to be remembered or typed."""
+    cfg = config.load()
+    if not picker.usable():
+        main(["--help"])
+        return 0
+    while True:
+        actions = _menu_actions(cfg)
+        chosen = picker.Picker(
+            actions,
+            [picker.Column("", 14, lambda a: a.label),
+             picker.Column("", 46, lambda a: a.hint)],
+            title="job application hub",
+            search=lambda a: f"{a.label} {a.hint}",
+        ).run()
+        if chosen is None or chosen.key == "quit":
+            return 0
+        print()
+        chosen.run()
+        try:
+            input("\n[enter] back to the menu, [ctrl-c] to leave ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+
+
 def cmd_take(args: argparse.Namespace) -> int:
     _load_env()
     if len(args.query) >= 12 and all(c in "0123456789abcdef" for c in args.query):
@@ -363,7 +453,8 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="jam", description="Job Application Hub")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    ap.set_defaults(func=cmd_menu)
+    sub = ap.add_subparsers(dest="cmd")
 
     r = sub.add_parser("render", help="render a CV from the master profile")
     r.add_argument("--app", help="application id; uses its tailoring.yaml")
