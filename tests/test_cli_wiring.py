@@ -42,28 +42,74 @@ class TestPickReturnsAChoice:
 
 
 class TestPickFilters:
-    def test_the_filter_bar_is_built_from_the_jobs_it_was_given(self):
-        jobs = [job(source="linkedin", locations=["London"]),
-                job(source="reed", locations=["Glasgow"], job_id="b" * 16)]
-        with patch.object(picker.Picker, "run", lambda self: self) as _:
-            screen = cli._pick(jobs)
-        names = [f.name for f in screen.filters]
-        assert names == ["age", "sort", "fit", "where", "source"]
-
-    def test_locations_come_from_the_radars_canonical_set(self):
-        jobs = [job(locations=["London", "UK"]),
-                job(locations=["London"], job_id="b" * 16)]
+    def screen(self, jobs):
         with patch.object(picker.Picker, "run", lambda self: self):
-            screen = cli._pick(jobs)
-        where = next(f for f in screen.filters if f.name == "where")
-        assert [label for label, _ in where.options][:2] == ["any", "London"]
+            return cli._pick(jobs)
+
+    def test_the_bar_holds_what_is_worth_narrowing_by(self):
+        assert [f.name for f in self.screen([job()]).filters] == \
+            ["age", "sort", "min fit"]
 
     def test_sorting_is_left_to_the_server(self):
         """Ordering a page here would silently drop rows it never contained."""
-        with patch.object(picker.Picker, "run", lambda self: self):
-            screen = cli._pick([job()])
-        sort = next(f for f in screen.filters if f.name == "sort")
+        sort = next(f for f in self.screen([job()]).filters if f.name == "sort")
         assert sort.reload is not None and sort.keep is None
+
+    def test_there_is_no_posted_option(self):
+        """Every posting arrives with posted_at null, so the radar falls back
+        to first_seen and "posted" is "newest" wearing another name."""
+        sort = next(f for f in self.screen([job()]).filters if f.name == "sort")
+        assert [label for label, _ in sort.options] == ["fit", "newest"]
+
+    def test_age_counts_unknown_as_fresh_rather_than_hiding_it(self):
+        age = next(f for f in self.screen([job()]).filters if f.name == "age")
+        assert age.keep(job(), 2) is True
+
+
+class TestFilterMemory:
+    """Choosing 7d and 8+ on every open is the friction that ends with the
+    filters going unused."""
+
+    @pytest.fixture
+    def state(self, tmp_path, monkeypatch):
+        path = tmp_path / ".inbox-filters.json"
+        monkeypatch.setattr(cli, "_filter_state_path", lambda: path)
+        return path
+
+    def filters(self):
+        return [picker.Filter("age", [("48h", 2), ("7d", 7), ("all", None)]),
+                picker.Filter("min fit", [("any", None), ("8+", 8.0)])]
+
+    def test_what_was_chosen_comes_back(self, state):
+        chosen = self.filters()
+        chosen[0].index, chosen[1].index = 1, 1
+        cli._remember_filters(chosen)
+
+        fresh = self.filters()
+        cli._restore_filters(fresh)
+        assert [f.label for f in fresh] == ["7d", "8+"]
+
+    def test_nothing_saved_leaves_the_defaults(self, state):
+        fresh = self.filters()
+        cli._restore_filters(fresh)
+        assert [f.label for f in fresh] == ["48h", "any"]
+
+    def test_a_damaged_file_is_ignored_rather_than_fatal(self, state):
+        state.write_text("{not json")
+        fresh = self.filters()
+        cli._restore_filters(fresh)
+        assert [f.label for f in fresh] == ["48h", "any"]
+
+    def test_a_remembered_option_that_no_longer_exists_is_skipped(self, state):
+        state.write_text('{"age": "30d"}')
+        fresh = self.filters()
+        cli._restore_filters(fresh)
+        assert fresh[0].label == "48h"
+
+    def test_saving_never_fails_a_screen(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cli, "_filter_state_path",
+                            lambda: tmp_path / "nope" / "deeper" / "f.json")
+        cli._remember_filters(self.filters())      # must not raise
 
 
 class TestEveryMenuPathOpens:

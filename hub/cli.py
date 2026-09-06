@@ -6,7 +6,6 @@ skill, not here.
 from __future__ import annotations
 
 import argparse
-import collections
 import json
 import os
 import re
@@ -171,7 +170,34 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     return 0
 
 
-SORTS = [("fit", "score"), ("newest", "seen"), ("posted", "posted")]
+def _filter_state_path() -> Path:
+    return config.load().data / ".inbox-filters.json"
+
+
+def _restore_filters(filters: list) -> None:
+    """Put the bar back where it was left.
+
+    Choosing 7d and 8+ every time you open the list is the kind of friction
+    that ends with the filters going unused.
+    """
+    try:
+        saved = json.loads(_filter_state_path().read_text())
+    except (OSError, ValueError):
+        return
+    for f in filters:
+        label = saved.get(f.name)
+        for i, (option, _) in enumerate(f.options):
+            if option == label:
+                f.index = i
+                break
+
+
+def _remember_filters(filters: list) -> None:
+    state = {f.name: f.label for f in filters}
+    try:
+        _filter_state_path().write_text(json.dumps(state, indent=2) + "\n")
+    except OSError:
+        pass                                  # never fail a screen over this
 
 
 def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
@@ -207,30 +233,22 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
 
     # Sorting is the server's job: ordering a page here would silently drop
     # rows the page never contained.
+    #
+    # There is no "posted" option because no posting carries a date: all 114
+    # arrive with posted_at null, and the radar's SQL falls back to first_seen,
+    # which makes it identical to "newest" while looking like a third choice.
     sort_filter = picker.Filter(
-        "sort", [("fit", "score"), ("newest", "seen"), ("posted", "posted")],
-        reload=reload)
-
-    places = collections.Counter()
-    for job in jobs:
-        for place in (job.locations or []):
-            places[place] += 1
-    place_options = [("any", None)] + [(p, p) for p, _ in places.most_common(6)]
-
-    sources = [("any", None)] + [(s, s) for s, _ in
-                                 collections.Counter(j.source for j in jobs).most_common(6)]
+        "sort", [("fit", "score"), ("newest", "seen")], reload=reload)
 
     filters = [
         picker.Filter("age", [("48h", 2), ("7d", 7), ("all", None)],
                       keep=lambda j, v: v is None or (j.age_days or 0) <= v),
         sort_filter,
-        picker.Filter("fit", [("any", None), ("7+", 7.0), ("8+", 8.0), ("9", 9.0)],
+        picker.Filter("min fit", [("any", None), ("7+", 7.0), ("8+", 8.0),
+                                  ("9", 9.0)],
                       keep=lambda j, v: v is None or (j.score or 0) >= v),
-        picker.Filter("where", place_options,
-                      keep=lambda j, v: v is None or v in (j.locations or [])),
-        picker.Filter("source", sources,
-                      keep=lambda j, v: v is None or j.source == v),
     ]
+    _restore_filters(filters)
 
     def score_unrated(p) -> str:
         pending = [j.job_id for j in p.rows if j.score is None][:20]
@@ -243,7 +261,7 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
         return (f"sent {len(pending)} to be scored now, rather than waiting "
                 f"for the radar's overnight run")
 
-    return picker.Picker(
+    screen = picker.Picker(
         jobs, columns, title="job-radar inbox",
         search=lambda j: f"{j.company} {j.title} {j.location} {j.source}",
         deep=deep, deep_label="in JD",
@@ -253,7 +271,10 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
         # The reason sits beside the score rather than behind a flag: a bare
         # number looks more objective than it is and cannot be argued with.
         detail=lambda j: j.reason,
-    ).run()
+    )
+    chosen = screen.run()
+    _remember_filters(screen.filters)
+    return chosen
 
 
 def _vacancy_screen(job_id: str, on_taken=None) -> None:
