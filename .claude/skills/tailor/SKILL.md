@@ -60,12 +60,34 @@ Check it: `jam coverage --app <app_id>`.
 
 ### 3. Produce the CV
 
-Tailor from the LaTeX master in `data/master/cv.tex`, following
-`references/tailoring-principles.md`. Edit a copy in the application folder,
-never the master, and compile it there.
+Work in the application folder, never in `data/master/`:
 
-Reword to the vacancy's vocabulary where it is truthful. Framing language
-layered onto a real fact is fine; a new noun or number is not.
+```sh
+cd data/applications/<app_id>
+cp ../../master/cv.tex ../../master/resume.cls .
+# edit cv.tex
+latexmk -pdf -interaction=nonstopmode -halt-on-error cv.tex
+```
+
+What you may change, in the order that pays:
+
+- **Order.** Lead with what this vacancy asks for. This costs nothing and is
+  most of the effect.
+- **Length.** Cut what is irrelevant to this role to make room. One page
+  unless the master is longer.
+- **Wording.** Reword a real bullet in the vacancy's own terms where it is
+  truthful. A recruiter's search matches exact strings and does not expand
+  synonyms: if the posting says `ETL` and the CV says "data pipelines", the
+  search will not find it.
+- **Merging.** Two real bullets can become one where the vacancy names both.
+
+Framing language layered onto a real fact is fine — "ensuring reliable
+delivery" on top of real data-quality work is what anyone writing their own CV
+does. A new noun or number is not.
+
+Do not touch margins, spacing or the class file. The design is fixed so every
+application looks like it came from the same person; if it does not fit, cut
+content.
 
 ### 4. Check it
 
@@ -98,6 +120,16 @@ For the human:
 ## Then
 
 `/apply <app_id>` fills the form. You do not submit; the human does.
+
+## Why the honest gaps matter more than the CV
+
+`jam gaps` aggregates the `missing` lines from every application, and it is
+the one analysis in the project that works at this volume: its unit is a
+requirement, and there are hundreds of those, while there are only ever tens
+of applications. It is how the next thing to learn gets decided.
+
+That only holds if `missing` means missing. Marking a partial as covered to
+make a CV look better corrupts the one number that was going to be reliable.
 
 ## Rules
 
