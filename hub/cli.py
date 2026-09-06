@@ -253,7 +253,7 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
         # The reason sits beside the score rather than behind a flag: a bare
         # number looks more objective than it is and cannot be argued with.
         detail=lambda j: j.reason,
-    )
+    ).run()
 
 
 def _vacancy_screen(job_id: str, on_taken=None) -> None:
