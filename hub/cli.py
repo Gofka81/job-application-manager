@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from hub import backfill, check as check_mod, config, coverage, render
+from hub import answerbank, backfill, bootstrap, check as check_mod, config, coverage, render
 
 
 def cmd_render(args: argparse.Namespace) -> int:
@@ -97,6 +97,44 @@ def cmd_backfill(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_answers(args: argparse.Namespace) -> int:
+    """Show the answer bank, or create it from the standard question set."""
+    cfg = config.load()
+    path = cfg.data / "answer-bank.yaml"
+
+    if args.init:
+        if path.exists() and not args.force:
+            print(f"{path} exists; --force to overwrite", file=sys.stderr)
+            return 1
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entries = bootstrap.starter()
+        filled = 0
+        if cfg.master_profile.exists():
+            master = yaml.safe_load(cfg.master_profile.read_text())
+            filled = bootstrap.prefill(entries, master)
+        path.write_text(bootstrap.HEADER + yaml.safe_dump(
+            entries, sort_keys=False, allow_unicode=True, width=88))
+        print(f"wrote {len(entries)} questions to {path}, "
+              f"{filled} answered from the master profile")
+        print("fill in the values you know; the rest are learned as they come up")
+        return 0
+
+    if not path.exists():
+        print(f"no answer bank at {path} — run `jam answers --init`",
+              file=sys.stderr)
+        return 1
+
+    bank = yaml.safe_load(path.read_text()) or []
+    answered = [e for e in bank
+                if e.get("value") is not None or e.get("since")]
+    print(f"{len(answered)}/{len(bank)} answered")
+    if args.missing:
+        for e in bank:
+            if e.get("value") is None and not e.get("since"):
+                print(f"  [{e['reuse']:<13}] {e['question']}")
+    return 0
+
+
 def cmd_coverage(args: argparse.Namespace) -> int:
     cfg = config.load()
     folder = cfg.applications / args.app
@@ -175,6 +213,12 @@ def main(argv: list[str] | None = None) -> int:
     ck.add_argument("--contact", action="store_true",
                     help="also require the contact email to extract")
     ck.set_defaults(func=cmd_check)
+
+    an = sub.add_parser("answers", help="the answer bank for application forms")
+    an.add_argument("--init", action="store_true", help="create from the standard set")
+    an.add_argument("--force", action="store_true")
+    an.add_argument("--missing", action="store_true", help="list unanswered questions")
+    an.set_defaults(func=cmd_answers)
 
     bf = sub.add_parser("backfill", help="recover coverage records from changes.md")
     bf.add_argument("--apply", action="store_true")
