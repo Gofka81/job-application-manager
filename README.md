@@ -74,6 +74,8 @@ The CV itself is still produced by the standalone `tailor-cv` skill, which
 works; this repository checks the result rather than replacing it (D73).
 
 ```sh
+jam inbox                                   # what job-radar found, arrow keys to pick
+jam take "data idols"                       # turn a vacancy into an application
 jam check ~/CV/applications --max-pages 1   # check finished PDFs against the master
 jam gaps                                    # what the market wants that you lack
 jam coverage --app <app_id>                 # validate one coverage record

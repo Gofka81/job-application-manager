@@ -13,7 +13,8 @@ from pathlib import Path
 import yaml
 
 from hub import (answerbank, backfill, bootstrap, check as check_mod, config,
-                 coverage, inbox as inbox_mod, picker, render)
+                 coverage, inbox as inbox_mod, picker, render,
+                 take as take_mod)
 
 
 def cmd_render(args: argparse.Namespace) -> int:
@@ -130,14 +131,7 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     # A person picks with the arrow keys; an agent, a pipe or CI gets the table.
     if not args.plain and picker.usable():
         chosen = _pick(shortlist)
-        if chosen is None:
-            return 0
-        print(f"{chosen.company} · {chosen.title}")
-        print(f"  fit {chosen.score or '-'} · {chosen.source} · {chosen.url}")
-        if chosen.reason:
-            print(f"  {chosen.reason}")
-        print(f"\nnext: jam take {chosen.job_id[:8]}")
-        return 0
+        return 0 if chosen is None else _take(chosen.job_id, args.yes)
 
     print(f"{len(shortlist)} of {len(jobs)} jobs\n")
     print(f"{'#':>3}  {'fit':>4}  {'age':>4}  {'company':<24} {'title':<44} "
@@ -184,6 +178,85 @@ def _pick(jobs: list):
         # explain.
         detail=lambda j: j.reason,
     ).run()
+
+
+def _resolve(query: str, jobs: list):
+    """A job id prefix, or a fragment of the company or title.
+
+    Position in a list is not an identity: the next scan reorders it, and
+    `take 3` would quietly take a different vacancy.
+    """
+    q = query.lower()
+    exact = [j for j in jobs if j.job_id.startswith(query)]
+    if len(exact) == 1:
+        return exact[0], []
+    hits = [j for j in jobs if q in f"{j.company} {j.title}".lower()]
+    return (hits[0] if len(hits) == 1 else None), hits
+
+
+def _take(job_id: str, assume_yes: bool) -> int:
+    cfg = config.load()
+    try:
+        job = inbox_mod.detail(job_id)
+    except inbox_mod.RadarError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    company, title = job.get("company"), job.get("title")
+    print(f"{company} · {title}")
+    print(f"  fit {job.get('score') or '-'} · {job.get('source')} · {job.get('url')}")
+    if job.get("eval_reason"):
+        print(f"  {job['eval_reason']}")
+    jd = job.get("description") or ""
+    print(f"  JD: {len(jd)} chars" + ("" if jd else "  — not held by the radar"))
+
+    seen = take_mod.already_applied(cfg.applications, company or "", title or "")
+    if seen:
+        print(f"\n  already applied: {', '.join(seen)}")
+
+    if not assume_yes:
+        try:
+            if input("\ncreate the application? [y/N] ").strip().lower() != "y":
+                print("nothing created")
+                return 0
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+
+    folder, record = take_mod.create(cfg.applications, job)
+    print(f"\ncreated {folder}")
+    print(f"  application.json  channel={record['channel']} "
+          f"discovery={record['discovery']} radar_score={record['radar_score']}")
+    print(f"  jd.md             {len(jd)} chars")
+    try:
+        inbox_mod.set_status(job_id, "saved")
+        print("  marked saved in job-radar")
+    except inbox_mod.RadarError as exc:
+        # The folder is the thing that matters; the radar can be told again.
+        print(f"  could not mark it saved: {exc}", file=sys.stderr)
+    print("\nnext: /tailor")
+    return 0
+
+
+def cmd_take(args: argparse.Namespace) -> int:
+    _load_env()
+    if len(args.query) >= 12 and all(c in "0123456789abcdef" for c in args.query):
+        return _take(args.query, args.yes)
+    try:
+        jobs = inbox_mod.fetch(limit=args.limit)
+    except inbox_mod.RadarError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    job, hits = _resolve(args.query, jobs)
+    if job is None:
+        if not hits:
+            print(f"nothing matches {args.query!r}", file=sys.stderr)
+        else:
+            print(f"{args.query!r} matches {len(hits)}:", file=sys.stderr)
+            for h in hits[:10]:
+                print(f"  {h.job_id[:8]}  {h.company} · {h.title}", file=sys.stderr)
+        return 1
+    return _take(job.job_id, args.yes)
 
 
 def cmd_answers(args: argparse.Namespace) -> int:
@@ -311,9 +384,17 @@ def main(argv: list[str] | None = None) -> int:
     ib.add_argument("--q", help="search title, company and JD text")
     ib.add_argument("--all", action="store_true", help="every status, not just new")
     ib.add_argument("--why", action="store_true", help="show the triage reason")
+    ib.add_argument("--yes", "-y", action="store_true",
+                    help="skip the confirmation when taking from the picker")
     ib.add_argument("--plain", action="store_true",
                     help="print the table instead of the picker")
     ib.set_defaults(func=cmd_inbox)
+
+    tk = sub.add_parser("take", help="turn a vacancy into an application")
+    tk.add_argument("query", help="job id, or part of the company or title")
+    tk.add_argument("--limit", type=int, default=300)
+    tk.add_argument("--yes", "-y", action="store_true")
+    tk.set_defaults(func=cmd_take)
 
     an = sub.add_parser("answers", help="the answer bank for application forms")
     an.add_argument("--init", action="store_true", help="create from the standard set")

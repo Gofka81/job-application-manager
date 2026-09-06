@@ -66,13 +66,13 @@ Nothing runs without this. Done once.
 
 The main block. Until it works, nothing else has anything to stand on.
 
-- [ ] **B1.1** `S` `app_id`, application folder, `application.json` schema,
+- [x] **B1.1** `S` `app_id`, application folder, `application.json` schema,
       `jd.md` snapshot
-- [ ] **B1.2** `M` Intake, branch A — link from INBOX: JD and score already
+- [x] **B1.2** `M` Intake, branch A — link from INBOX: JD and score already
       exist
 - [ ] **B1.3** `M` Intake, branch B — arbitrary link: the agent reads the
       page; fallback is pasting the text
-- [ ] **B1.4** `S` Dedup against already-submitted, plus company context
+- [x] **B1.4** `S` Dedup against already-submitted, plus company context
 - [ ] **B1.5** `S` Off-radar triage with the same bounded prompt,
       `score_source`
 - [x] **B1.6** `L` **Fact gate** — port `verify-cv-facts.mjs` to Python. The

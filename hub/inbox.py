@@ -79,35 +79,71 @@ class Job:
         return f"{date.today()}--{part(self.company)}--{part(self.title)}"
 
 
-def fetch(limit: int = 200, query: str | None = None,
-          base: str | None = None, token: str | None = None) -> list[Job]:
+def _credentials(base: str | None, token: str | None) -> tuple[str, str]:
     base = (base or os.environ.get("JOB_RADAR_API_URL") or "").rstrip("/")
     token = token or os.environ.get("JOB_RADAR_API_TOKEN")
     if not base:
         raise RadarError("JOB_RADAR_API_URL is not set — see .env.example")
     if not token:
         raise RadarError("JOB_RADAR_API_TOKEN is not set — see .env.example")
+    return base, token
 
-    url = f"{base}/api/jobs?limit={limit}" + (f"&q={query}" if query else "")
+
+def _call(path: str, base: str, token: str, payload: dict | None = None):
     # Cloudflare fronts the radar and blocks urllib's default User-Agent at the
     # edge with a 403 — which reads exactly like a bad token, while the app
     # itself answers 401 for that. Sending an ordinary one avoids a confusing
     # dead end.
-    request = urllib.request.Request(url, headers={
+    body = json.dumps(payload).encode() if payload is not None else None
+    request = urllib.request.Request(f"{base}{path}", data=body, headers={
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
         "User-Agent": "job-application-hub/0.1",
+        **({"Content-Type": "application/json"} if body else {}),
     })
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
-            payload = json.load(response)
+            return json.load(response)
     except urllib.error.HTTPError as exc:
         hint = {401: " — wrong token?",
-                403: " — blocked at the edge, not by the app"}.get(exc.code, "")
+                403: " — blocked at the edge, not by the app",
+                404: " — no such job"}.get(exc.code, "")
         raise RadarError(f"radar returned {exc.code}{hint}") from exc
     except urllib.error.URLError as exc:
         raise RadarError(f"cannot reach {base}: {exc.reason}") from exc
-    return [Job.from_row(r) for r in payload.get("jobs", [])]
+
+
+def detail(job_id: str, base: str | None = None, token: str | None = None) -> dict:
+    """One job with its `description` — the plain-text JD.
+
+    The list endpoint leaves it out because it is kilobytes per row, so the
+    text is fetched once, for the vacancy actually chosen.
+    """
+    return _call(f"/api/jobs/{job_id}", *_credentials(base, token))
+
+
+def set_status(job_id: str, status: str, base: str | None = None,
+               token: str | None = None) -> None:
+    """Tell the radar a vacancy has been taken, so it leaves the INBOX.
+
+    `saved` when the application folder is created, `applied` only once a
+    submission is confirmed — the same distinction the hub makes (D9).
+    """
+    b, t = _credentials(base, token)
+    _call("/api/status", b, t, {"job_id": job_id, "status": status})
+
+
+def fetch(limit: int = 200, query: str | None = None, sort: str = "score",
+          base: str | None = None, token: str | None = None) -> list[Job]:
+    """Sorted server-side: once the table outgrows `limit`, ordering a
+    newest-first page in the client silently drops older high-scoring rows."""
+    base, token = _credentials(base, token)
+    url = f"/api/jobs?limit={limit}&sort={sort}" + (f"&q={query}" if query else "")
+    # Cloudflare fronts the radar and blocks urllib's default User-Agent at the
+    # edge with a 403 — which reads exactly like a bad token, while the app
+    # itself answers 401 for that. Sending an ordinary one avoids a confusing
+    # dead end.
+    return [Job.from_row(r) for r in _call(url, base, token).get("jobs", [])]
 
 
 def shortlist(jobs: list[Job], min_score: float = 0.0,
