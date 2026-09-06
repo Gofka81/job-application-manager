@@ -6,12 +6,14 @@ skill, not here.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 import yaml
 
-from hub import answerbank, backfill, bootstrap, check as check_mod, config, coverage, render
+from hub import (answerbank, backfill, bootstrap, check as check_mod, config,
+                 coverage, inbox as inbox_mod, picker, render)
 
 
 def cmd_render(args: argparse.Namespace) -> int:
@@ -95,6 +97,93 @@ def cmd_backfill(args: argparse.Namespace) -> int:
     if not args.apply:
         print("re-run with --apply to write the files")
     return 0
+
+
+def _load_env() -> None:
+    """Read .env without a dependency. Real environment wins."""
+    path = config.ROOT / ".env"
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+def cmd_inbox(args: argparse.Namespace) -> int:
+    """What job-radar has found, best fit first."""
+    _load_env()
+    try:
+        jobs = inbox_mod.fetch(limit=args.limit, query=args.q)
+    except inbox_mod.RadarError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    statuses = () if args.all else ("new",)
+    shortlist = inbox_mod.shortlist(jobs, args.min_score, statuses, args.max_age)
+    if not shortlist:
+        print(f"nothing matches ({len(jobs)} rows fetched)")
+        return 0
+
+    # A person picks with the arrow keys; an agent, a pipe or CI gets the table.
+    if not args.plain and picker.usable():
+        chosen = _pick(shortlist)
+        if chosen is None:
+            return 0
+        print(f"{chosen.company} · {chosen.title}")
+        print(f"  fit {chosen.score or '-'} · {chosen.source} · {chosen.url}")
+        if chosen.reason:
+            print(f"  {chosen.reason}")
+        print(f"\nnext: jam take {chosen.job_id[:8]}")
+        return 0
+
+    print(f"{len(shortlist)} of {len(jobs)} jobs\n")
+    print(f"{'#':>3}  {'fit':>4}  {'age':>4}  {'company':<24} {'title':<44} "
+          f"{'where':<18} {'pay':<10} src")
+    print("-" * 118)
+    for i, job in enumerate(shortlist[:args.top], 1):
+        fit = f"{job.score:.1f}" if job.score is not None else "  -"
+        age = f"{job.age_days}d" if job.age_days is not None else "  -"
+        flag = "" if job.jd_full else " *"
+        print(f"{i:>3}  {fit:>4}  {age:>4}  {job.company[:24]:<24} "
+              f"{(job.title[:42] + flag):<44} {job.location[:18]:<18} "
+              f"{job.salary:<10} {job.source}")
+
+    if any(not j.jd_full for j in shortlist[:args.top]):
+        print("\n* the radar holds only a snippet; the full JD is read from the "
+              "posting when the application is created")
+    if args.why:
+        print()
+        for i, job in enumerate(shortlist[:args.top], 1):
+            if job.reason:
+                print(f"{i:>3}. {job.reason[:110]}")
+    return 0
+
+
+def _pick(jobs: list):
+    def age(job):
+        return f"{job.age_days}d" if job.age_days is not None else "-"
+
+    columns = [
+        picker.Column("fit", 4, lambda j: f"{j.score:.1f}" if j.score is not None else "-", right=True),
+        picker.Column("age", 4, age, right=True),
+        picker.Column("company", 22, lambda j: j.company),
+        picker.Column("title", 40, lambda j: j.title),
+        picker.Column("where", 16, lambda j: j.location),
+        picker.Column("pay", 11, lambda j: j.salary),
+        picker.Column("src", 10, lambda j: j.source),
+    ]
+    return picker.Picker(
+        jobs, columns, title="job-radar inbox",
+        search=lambda j: f"{j.company} {j.title} {j.location} {j.source}",
+        # The reason is shown beside the score rather than behind a flag: a
+        # bare number looks more objective than it is, and cannot be argued
+        # with. career-ops goes further and refuses to show a score it cannot
+        # explain.
+        detail=lambda j: j.reason,
+    ).run()
 
 
 def cmd_answers(args: argparse.Namespace) -> int:
@@ -213,6 +302,18 @@ def main(argv: list[str] | None = None) -> int:
     ck.add_argument("--contact", action="store_true",
                     help="also require the contact email to extract")
     ck.set_defaults(func=cmd_check)
+
+    ib = sub.add_parser("inbox", help="what job-radar has found")
+    ib.add_argument("--top", type=int, default=20, help="rows to show")
+    ib.add_argument("--limit", type=int, default=300, help="rows to fetch")
+    ib.add_argument("--min-score", type=float, default=0.0)
+    ib.add_argument("--max-age", type=int, help="days since posted")
+    ib.add_argument("--q", help="search title, company and JD text")
+    ib.add_argument("--all", action="store_true", help="every status, not just new")
+    ib.add_argument("--why", action="store_true", help="show the triage reason")
+    ib.add_argument("--plain", action="store_true",
+                    help="print the table instead of the picker")
+    ib.set_defaults(func=cmd_inbox)
 
     an = sub.add_parser("answers", help="the answer bank for application forms")
     an.add_argument("--init", action="store_true", help="create from the standard set")
