@@ -81,6 +81,16 @@ class Job:
         return 2
 
     @property
+    def dated(self) -> bool:
+        """Whether the age is the publication date or a stand-in for it.
+
+        Four sources in a hundred give no date, and for those the only thing
+        left is when a scan met the posting. Shown, but marked: an estimate
+        printed as a fact is the kind of wrong nobody catches.
+        """
+        return bool(self.posted_at)
+
+    @property
     def where(self) -> str:
         """Remote is a column of its own in the radar; showing it beside the
         place saves reading a location string to find out."""

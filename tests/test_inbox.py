@@ -140,3 +140,24 @@ class TestPriorityTier:
 
     def test_no_cities_configured_leaves_two_tiers(self):
         assert inbox.Job.from_row(row(location="Glasgow")).tier(()) == 2
+
+
+class TestDated:
+    """Four sources in a hundred give no publication date. Showing discovery
+    in its place is fine; showing it unmarked is not."""
+
+    def test_a_posting_with_a_date_is_dated(self):
+        assert inbox.Job.from_row(row(posted_at="2026-09-01")).dated
+
+    def test_one_without_is_not(self):
+        assert not inbox.Job.from_row(row(first_seen="2026-09-01")).dated
+
+    def test_the_age_still_comes_from_somewhere(self):
+        job = inbox.Job.from_row(row(first_seen=date.today().isoformat()))
+        assert job.age_days == 0 and not job.dated
+
+    def test_the_publication_date_wins_over_discovery(self):
+        """They differ on 30 of 113 rows, so which one is used matters."""
+        job = inbox.Job.from_row(row(posted_at=(date.today() - timedelta(days=5)).isoformat(),
+                                     first_seen=date.today().isoformat()))
+        assert job.age_days == 5 and job.dated

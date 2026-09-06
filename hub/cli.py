@@ -203,7 +203,10 @@ def _remember_filters(filters: list) -> None:
 def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
           limit=300):
     def age(job):
-        return f"{job.age_days}d" if job.age_days is not None else "-"
+        if job.age_days is None:
+            return "-"
+        # `~` where the board gave no date and this is when we met it.
+        return f"{job.age_days}d" if job.dated else f"~{job.age_days}d"
 
     columns = [
         picker.Column("fit", 4, lambda j: f"{j.score:.1f}" if j.score is not None else "-", right=True),
@@ -261,7 +264,9 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
                       keep=lambda j, v: v is None or (j.age_days or 0) <= v,
                       hints={"48h": "published in the last two days",
                              "7d": "published in the last week",
-                             "all": "everything still open"}),
+                             "all": "everything still open  ·  ~ means the "
+                                    "board gave no date, so it is when we "
+                                    "found it"}),
         sort_filter,
         picker.Filter("min fit", [("any", None), ("7+", 7.0), ("8+", 8.0),
                                   ("9", 9.0)],
