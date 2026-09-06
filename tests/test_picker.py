@@ -279,3 +279,63 @@ class TestFit:
 
     def test_a_value_is_cut_to_the_width_it_was_given(self):
         assert picker.Column("x", 30, lambda r: "y" * 50).render(None, 8) == "y" * 8
+
+
+class TestDeepSearch:
+    """Typing filters what is on screen. A job description is kilobytes and
+    never travels in a list, so `spark` cannot be found that way — tab hands
+    the same text to something that can look deeper."""
+
+    @dataclass
+    class Row:
+        name: str
+
+    def make(self, deep=None):
+        rows = [self.Row("Alto"), self.Row("Cognizant")]
+        return picker.Picker(
+            rows, [picker.Column("n", 12, lambda r: r.name)],
+            search=lambda r: r.name,
+            deep=deep or (lambda q: [self.Row(f"found {q}")]))
+
+    def type(self, p, text):
+        for ch in text:
+            p._key(ord(ch))
+        return p
+
+    def test_tab_replaces_the_rows_with_what_the_search_returned(self):
+        p = self.type(self.make(), "spark")
+        p._key(9)
+        assert [r.name for r in p.rows] == ["found spark"]
+
+    def test_the_typed_text_moves_into_the_search_and_the_filter_clears(self):
+        p = self.type(self.make(), "spark")
+        p._key(9)
+        assert p.deep_query == "spark" and p.query == ""
+
+    def test_esc_drops_the_search_before_the_filter(self):
+        """One key going back one step at a time."""
+        p = self.type(self.make(), "spark")
+        p._key(9)
+        assert p._key(27) is False
+        assert [r.name for r in p.rows] == ["Alto", "Cognizant"]
+        assert p._key(27) is None
+
+    def test_tab_does_nothing_without_a_query(self):
+        p = self.make()
+        p._key(9)
+        assert not p.searching and len(p.rows) == 2
+
+    def test_a_failing_search_is_reported_not_raised(self):
+        def boom(_):
+            raise RuntimeError("radar unreachable")
+        p = self.type(self.make(deep=boom), "spark")
+        p._key(9)
+        assert p.rows == [] and "unreachable" in p.deep_query
+
+    def test_without_a_deep_callback_tab_is_inert(self):
+        p = picker.Picker([self.Row("Alto")],
+                          [picker.Column("n", 12, lambda r: r.name)],
+                          search=lambda r: r.name)
+        self.type(p, "x")
+        p._key(9)
+        assert p.query == "x"

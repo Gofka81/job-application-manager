@@ -71,12 +71,21 @@ class Picker:
     def __init__(self, rows: Sequence, columns: Sequence[Column],
                  title: str = "", search: Callable[[object], str] | None = None,
                  detail: Callable[[object], str] | None = None,
-                 modes: Sequence[tuple[str, Callable[[object], bool]]] | None = None):
+                 modes: Sequence[tuple[str, Callable[[object], bool]]] | None = None,
+                 deep: Callable[[str], Sequence] | None = None,
+                 deep_label: str = "deep search"):
         self.all = list(rows)
         # Cycled with left/right. A filter the caller wants reachable without
         # leaving the screen and rerunning the command with a flag.
         self.modes = list(modes or [])
         self.mode = 0
+        # Typing filters what is on screen. Some of what you want to search is
+        # not on screen — a job description is kilobytes and never travels in a
+        # list — so tab hands the same text to something that can look deeper.
+        self.deep = deep
+        self.deep_label = deep_label
+        self.deep_query = ""
+        self.base = list(rows)
         self.columns = list(columns)
         self.title = title
         self.search = search or (lambda r: str(r))
@@ -88,6 +97,10 @@ class Picker:
     @property
     def mode_label(self) -> str:
         return self.modes[self.mode][0] if self.modes else ""
+
+    @property
+    def searching(self) -> bool:
+        return bool(self.deep_query)
 
     @property
     def rows(self) -> list:
@@ -148,6 +161,16 @@ class Picker:
             if result is not False:
                 return result
 
+    def _deepen(self) -> None:
+        self.deep_query = self.query
+        try:
+            self.all = list(self.deep(self.query))
+        except Exception as exc:                 # a failed search is not a crash
+            self.deep_query = f"{self.query} — {exc}"
+            self.all = []
+        self.query = ""
+        self.cursor = 0
+
     def _draw(self, screen):
         screen.erase()
         height, width = screen.getmaxyx()
@@ -159,6 +182,8 @@ class Picker:
 
         layout = fit(self.columns, width - 3)
         head = f"{self.title}   {len(rows)} of {len(self.all)}"
+        if self.searching:
+            head += f"   {self.deep_label}: {self.deep_query}"
         if self.modes:
             head += f"   [{self.mode_label}]"
         if self.query:
@@ -182,6 +207,8 @@ class Picker:
                                curses.color_pair(3))
 
         hint = "  ↑↓ move   enter choose   type to filter"
+        if self.deep:
+            hint += f"   tab {self.deep_label}"
         if self.modes:
             hint += "   ←→ " + "/".join(label for label, _ in self.modes)
         hint += "   esc back"
@@ -216,10 +243,17 @@ class Picker:
             self.cursor = 0
         elif key in (10, 13, curses.KEY_ENTER):
             return rows[self.cursor] if rows else None
+        elif key == 9 and self.deep and self.query:
+            self._deepen()
         elif key == 27:
-            # Esc clears the filter if there is one, and otherwise leaves —
-            # the same key going back one step at a time.
-            if self.query:
+            # Esc goes back one step at a time: it drops a deep search first,
+            # then the filter, and only leaves when there is nothing left to
+            # undo.
+            if self.searching:
+                self.deep_query = ""
+                self.all = list(self.base)
+                self.cursor = 0
+            elif self.query:
                 self.query = ""
                 self.cursor = 0
             else:

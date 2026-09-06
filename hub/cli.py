@@ -134,7 +134,8 @@ def cmd_inbox(args: argparse.Namespace) -> int:
 
     # A person picks with the arrow keys; an agent, a pipe or CI gets the table.
     if not args.plain and picker.usable():
-        chosen = _pick(shortlist)
+        chosen = _pick(shortlist, statuses, args.min_score, args.max_age,
+                       args.limit)
         return 0 if chosen is None else _take(chosen.job_id, args.yes)
 
     print(f"{len(shortlist)} of {len(jobs)} jobs\n")
@@ -164,7 +165,8 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     return 0
 
 
-def _pick(jobs: list):
+def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
+          limit=300):
     def age(job):
         return f"{job.age_days}d" if job.age_days is not None else "-"
 
@@ -180,8 +182,15 @@ def _pick(jobs: list):
     def within(days):
         return lambda j: j.age_days is None or j.age_days <= days
 
+    def deep(query: str):
+        """The radar searches the JD text server-side; the list payload never
+        carries it, so `spark` cannot be found by filtering what is on screen."""
+        found = inbox_mod.fetch(limit=limit, query=query)
+        return inbox_mod.shortlist(found, min_score, statuses, max_age)
+
     return picker.Picker(
         jobs, columns, title="job-radar inbox",
+        deep=deep, deep_label="in JD",
         search=lambda j: f"{j.company} {j.title} {j.location} {j.source}",
         # Freshness first, because a week-old posting is usually already
         # answered. Reachable without leaving the screen: the flag version
