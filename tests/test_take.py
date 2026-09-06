@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from types import SimpleNamespace
+
+import pytest
 
 from hub import take
 
@@ -96,3 +99,49 @@ class TestDuplicates:
         (tmp_path / "broken").mkdir()
         (tmp_path / "broken" / "application.json").write_text("{not json")
         assert take.already_applied(tmp_path, "Anyone", "Anything") == []
+
+
+class TestDiscard:
+    """Moved, not deleted. A folder holds a tailored CV, a coverage record and
+    the notes behind both, and a wrong `y` should be recoverable."""
+
+    def app(self, tmp_path, name="2026-09-06--northwind--data-engineer"):
+        folder = tmp_path / "applications" / name
+        folder.mkdir(parents=True)
+        (folder / "application.json").write_text("{}")
+        (folder / "cv.pdf").write_bytes(b"%PDF")
+        return folder
+
+    def test_it_leaves_the_working_set(self, tmp_path):
+        folder = self.app(tmp_path)
+        take.discard(folder, tmp_path / ".trash")
+        assert not folder.exists()
+
+    def test_nothing_is_actually_destroyed(self, tmp_path):
+        folder = self.app(tmp_path)
+        gone = take.discard(folder, tmp_path / ".trash")
+        assert (gone / "cv.pdf").read_bytes() == b"%PDF"
+
+    def test_the_trash_is_made_if_it_is_the_first_one(self, tmp_path):
+        take.discard(self.app(tmp_path), tmp_path / ".trash")
+        assert (tmp_path / ".trash").is_dir()
+
+    def test_deleting_the_same_id_twice_does_not_overwrite_the_first(
+            self, tmp_path):
+        """Taking a vacancy again and discarding it again is ordinary."""
+        first = take.discard(self.app(tmp_path), tmp_path / ".trash")
+        second = take.discard(self.app(tmp_path), tmp_path / ".trash")
+        assert first.exists() and second.exists() and first != second
+
+    def test_a_folder_that_is_not_there_says_so(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            take.discard(tmp_path / "nope", tmp_path / ".trash")
+
+    def test_the_trash_is_invisible_to_the_applications_list(self, tmp_path):
+        """The list globs applications/*/application.json, so the trash has to
+        sit outside that folder, not inside it."""
+        from hub import cli
+        applications = tmp_path / "applications"
+        take.discard(self.app(tmp_path), tmp_path / ".trash")
+        cfg = SimpleNamespace(applications=applications)
+        assert cli._applications(cfg) == []

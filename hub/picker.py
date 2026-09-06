@@ -28,6 +28,18 @@ def usable(stream=None) -> bool:
 
 
 @dataclass
+class Ask:
+    """What a key handler returns when it must not act on one keystroke.
+
+    The list's own footer becomes the question, so the row being decided
+    about stays on screen while you decide. Destructive keys return one of
+    these instead of doing the work.
+    """
+    question: str
+    run: Callable[[], str]
+
+
+@dataclass
 class Column:
     header: str
     width: int
@@ -101,6 +113,7 @@ class Picker:
         # they belong to the filter, and taking one back would hide any row
         # whose text contains it.
         self.keys = dict(keys or {})
+        self.pending: Ask | None = None
         self.message = ""
         # A predicate the caller can flip from a key, kept outside `modes`
         # because it combines with them rather than replacing them.
@@ -293,7 +306,11 @@ class Picker:
         hint = "  " + " · ".join(parts)
         if self.filters_open:
             hint = ""
-        if hint:
+        if self.pending:
+            question = f"  {self.pending.question}   [y] yes   [n] no"
+            screen.addnstr(height - 1, 0, question.ljust(width - 1)[: width - 1],
+                           width - 1, curses.color_pair(1))
+        elif hint:
             screen.addnstr(height - 1, 0, hint[: width - 1], width - 1,
                            curses.A_DIM)
         screen.refresh()
@@ -308,6 +325,14 @@ class Picker:
         so a company with a `g` in it could not be searched for at all.
         """
         rows = self.rows
+        if self.pending:
+            if key in (ord("y"), ord("Y")):
+                ask, self.pending = self.pending, None
+                self.message = ask.run() or ""
+            elif key in (ord("n"), ord("N"), 27):
+                self.pending = None
+                self.message = "cancelled"
+            return False
         if self.filters_open:
             return self._filter_key(key)
         if key == 6 and self.filters:            # ctrl-f
@@ -328,7 +353,11 @@ class Picker:
         elif key in (10, 13, curses.KEY_ENTER):
             return rows[self.cursor] if rows else None
         elif key in self.keys:
-            self.message = self.keys[key][1](self) or ""
+            result = self.keys[key][1](self)
+            if isinstance(result, Ask):
+                self.pending, self.message = result, ""
+            else:
+                self.message = result or ""
         elif key == 9 and self.deep and self.query:
             self._deepen()
         elif key == 27:
@@ -434,11 +463,15 @@ class Act:
     `confirm` turns the action bar into a yes/no question instead of opening
     another screen: the thing being decided about stays visible while you
     decide.
+
+    `closes` ends the screen after the action ran. An action that removes the
+    record it was invoked from has nothing left to show.
     """
     key: str
     label: str
     run: Callable[[], str]
     confirm: str | None = None
+    closes: bool = False
 
 
 class Detail:
@@ -515,6 +548,8 @@ class Detail:
             if key in (ord("y"), ord("Y")):
                 action, self.pending = self.pending, None
                 self.message = action.run() or ""
+                if action.closes:
+                    return None
             elif key in (ord("n"), ord("N"), 27):
                 self.pending = None
                 self.message = "cancelled"
@@ -538,6 +573,8 @@ class Detail:
                         self.message = ""
                     else:
                         self.message = action.run() or ""
+                        if action.closes:
+                            return None
                     break
         return True
 

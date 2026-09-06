@@ -399,3 +399,90 @@ class TestApplicationScreenActions:
         detail = self.screen(tmp_path, ["cv.pdf"])
         rebuild = next(a for a in detail.actions if a.key == "b")
         assert "does not pass" in rebuild.run()
+
+
+class TestDeletingAnApplication:
+    """Offered from both screens: the list is where you already know a row is
+    not wanted, the detail is where you have just read why."""
+
+    def records(self, tmp_path, n=2, submitted=None):
+        out = []
+        for i in range(n):
+            folder = tmp_path / f"2026-09-0{i + 1}--northwind{i}--engineer"
+            folder.mkdir(parents=True)
+            (folder / "application.json").write_text("{}")
+            out.append({"app_id": folder.name, "_folder": folder,
+                        "company": f"Northwind{i}", "title": "Engineer",
+                        "submitted_at": submitted})
+        return out
+
+    def cfg(self, tmp_path):
+        from hub import config
+        return dataclasses.replace(config.load(), data=tmp_path)
+
+    def list_screen(self, cfg, records):
+        seen = {}
+
+        def fake(self):
+            seen.setdefault("screen", self)
+            return None
+        with patch.object(cli, "_applications", lambda c: records), \
+             patch.object(picker.Picker, "run", fake):
+            cli._list_applications(cfg)
+        return seen["screen"]
+
+    def test_the_list_offers_it(self, tmp_path):
+        screen = self.list_screen(self.cfg(tmp_path), self.records(tmp_path))
+        assert screen.keys[24][0] == "^x delete"
+
+    def test_the_list_asks_before_it_acts(self, tmp_path):
+        records = self.records(tmp_path)
+        screen = self.list_screen(self.cfg(tmp_path), records)
+        result = screen.keys[24][1](screen)
+        assert isinstance(result, picker.Ask)
+        assert records[0]["_folder"].exists()
+
+    def test_the_question_names_the_row_under_the_cursor(self, tmp_path):
+        records = self.records(tmp_path)
+        screen = self.list_screen(self.cfg(tmp_path), records)
+        screen.cursor = 1
+        assert "Northwind1" in screen.keys[24][1](screen).question
+
+    def test_saying_yes_moves_it_and_drops_it_from_the_screen(self, tmp_path):
+        records = self.records(tmp_path)
+        screen = self.list_screen(self.cfg(tmp_path), records)
+        message = screen.keys[24][1](screen).run()
+        assert not records[0]["_folder"].exists()
+        assert (tmp_path / ".trash" / records[0]["app_id"]).is_dir()
+        assert "recoverable" in message
+        assert len(screen.rows) == 1
+
+    def test_an_empty_list_has_nothing_to_delete(self, tmp_path):
+        screen = self.list_screen(self.cfg(tmp_path), self.records(tmp_path))
+        screen.all, screen.base = [], []
+        assert screen.keys[24][1](screen) == "nothing selected"
+
+    def test_a_submitted_one_is_asked_about_differently(self, tmp_path):
+        """It throws away the record of something that actually happened."""
+        plain = self.records(tmp_path, n=1)[0]
+        assert "only copy" not in cli._delete_question(plain)
+        plain["submitted_at"] = "2026-09-06T10:00:00+00:00"
+        assert "only copy" in cli._delete_question(plain)
+
+    def test_the_detail_screen_offers_the_same_thing(self, tmp_path):
+        record = self.records(tmp_path, n=1)[0]
+        record["source_url"] = "https://example.com/1"
+        seen = {}
+        with patch.object(picker.Detail, "run",
+                          lambda self: seen.update(d=self)):
+            cli._application_screen(record, self.cfg(tmp_path))
+        delete = next(a for a in seen["d"].actions if a.key == "d")
+        assert delete.confirm and delete.closes
+
+    def test_a_failure_to_delete_is_reported_not_raised(self, tmp_path,
+                                                        monkeypatch):
+        record = self.records(tmp_path, n=1)[0]
+        monkeypatch.setattr(cli.take_mod, "discard",
+                            lambda *a: (_ for _ in ()).throw(OSError("busy")))
+        assert "could not delete" in cli._delete_application(
+            record, self.cfg(tmp_path))

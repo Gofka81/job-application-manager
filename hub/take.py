@@ -14,7 +14,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import date
+import shutil
+from datetime import date, datetime
 from pathlib import Path
 
 # Where the posting lives, which is not the same as where you found it (D25).
@@ -96,3 +97,25 @@ def create(root: Path, job: dict, when: date | None = None) -> tuple[Path, dict]
                    "page and paste it here._\n")
     (folder / "jd.md").write_text(header + description + "\n")
     return folder, data
+
+
+def discard(folder: Path, trash: Path) -> Path:
+    """Take an application out of the working set.
+
+    Moved rather than deleted. A folder holds a tailored CV, a coverage
+    record and the notes behind both, which is an hour of work and a
+    keystroke away from gone; a wrong `y` should be recoverable. The list
+    reads `applications/*/application.json`, so anything under `trash` is
+    already invisible to every screen without deleting a byte.
+
+    The status log is left alone. It is append-only by design: a submission
+    that happened still happened, whatever became of the folder.
+    """
+    if not folder.is_dir():
+        raise FileNotFoundError(folder)
+    trash.mkdir(parents=True, exist_ok=True)
+    target = trash / folder.name
+    if target.exists():
+        stamp = datetime.now().strftime("%H%M%S")
+        target = trash / f"{folder.name}--{stamp}"
+    return Path(shutil.move(str(folder), str(target)))

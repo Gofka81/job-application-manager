@@ -640,14 +640,57 @@ def _list_applications(cfg) -> int:
         picker.Column("stage", 12, lambda r: _stage(r)[0]),
         picker.Column("next", 30, lambda r: _stage(r)[1]),
     ]
+    def delete(screen):
+        """Deleting from the list is the common case: three of four rows in a
+        list are usually ones you already know you do not want."""
+        row = screen.rows[screen.cursor] if screen.rows else None
+        if row is None:
+            return "nothing selected"
+
+        def go():
+            message = _delete_application(row, cfg)
+            screen.base = [r for r in screen.base if r is not row]
+            screen.all = [r for r in screen.all if r is not row]
+            return message
+        return picker.Ask(_delete_question(row), go)
+
     while True:
         chosen = picker.Picker(
             records, columns, title="applications",
             search=lambda r: f"{r.get('company')} {r.get('title')}",
+            keys={24: ("^x delete", delete)},
         ).run()
         if chosen is None:
             return 0
         _application_screen(chosen, cfg)
+        # Re-read: the screen can have deleted the row that opened it.
+        records = _applications(cfg)
+        if not records:
+            return 0
+
+
+def _delete_application(record: dict, cfg) -> str:
+    """Take one application out of the working set.
+
+    Moved to `.trash`, not deleted: a folder is a tailored CV, a coverage
+    record and the notes behind both, and one keystroke should not be able to
+    end that. The status log is left alone, being append-only by design.
+    """
+    try:
+        gone = take_mod.discard(record["_folder"], cfg.data / ".trash")
+    except OSError as exc:
+        return f"could not delete it: {exc}"
+    return f"deleted {gone.name} (recoverable in .trash)"
+
+
+def _delete_question(record: dict) -> str:
+    """Deleting a submitted application throws away the record of something
+    that actually happened, which is worth saying rather than asking the same
+    question for both cases."""
+    who = record.get("company") or record.get("app_id", "this")
+    if record.get("submitted_at"):
+        return f"Delete {who}? It was submitted, and this is the only copy."
+    return f"Delete {who}?"
 
 
 def _application_screen(record: dict, cfg) -> None:
@@ -675,6 +718,9 @@ def _application_screen(record: dict, cfg) -> None:
     if (folder / "cv.pdf").exists():
         actions.append(picker.Act("v", "view cv",
                                   lambda: openurl.open_path(folder / "cv.pdf")))
+    actions.append(picker.Act(
+        "d", "delete", lambda: _delete_application(record, cfg),
+        confirm=_delete_question(record), closes=True))
     detail.actions = actions
     detail.run()
 

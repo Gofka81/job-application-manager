@@ -527,3 +527,58 @@ class TestHints:
 
     def test_an_option_without_one_says_nothing(self):
         assert picker.Filter("x", [("a", 1)]).hint == ""
+
+
+class TestConfirming:
+    """A key that destroys something must not act on one keystroke."""
+
+    def screen(self, run):
+        return picker.Picker(
+            [{"n": 1}, {"n": 2}],
+            [picker.Column("n", 4, lambda r: str(r["n"]))],
+            keys={24: ("^x delete", run)},
+        )
+
+    def asking(self, ran):
+        return lambda screen: picker.Ask("Delete this?",
+                                         lambda: ran.append(1) or "deleted")
+
+    def test_the_key_alone_does_nothing_yet(self):
+        ran = []
+        screen = self.screen(self.asking(ran))
+        screen._key(24)
+        assert ran == [] and screen.pending is not None
+
+    def test_yes_runs_it(self):
+        ran = []
+        screen = self.screen(self.asking(ran))
+        screen._key(24)
+        screen._key(ord("y"))
+        assert ran == [1] and screen.message == "deleted"
+
+    def test_no_does_not(self):
+        ran = []
+        screen = self.screen(self.asking(ran))
+        screen._key(24)
+        screen._key(ord("n"))
+        assert ran == [] and screen.pending is None
+
+    def test_escape_answers_no_rather_than_leaving_the_screen(self):
+        """Otherwise a half-asked question is answered by walking away."""
+        ran = []
+        screen = self.screen(self.asking(ran))
+        screen._key(24)
+        assert screen._key(27) is False and ran == []
+
+    def test_a_pending_question_swallows_the_arrows(self):
+        """Moving the cursor under an open question would change which row the
+        answer applies to."""
+        screen = self.screen(self.asking([]))
+        screen._key(24)
+        screen._key(curses.KEY_DOWN)
+        assert screen.cursor == 0
+
+    def test_a_handler_returning_plain_text_still_just_reports(self):
+        screen = self.screen(lambda s: "nothing selected")
+        screen._key(24)
+        assert screen.pending is None and screen.message == "nothing selected"
