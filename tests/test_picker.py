@@ -274,8 +274,14 @@ class TestFit:
     def test_a_single_column_still_renders(self):
         assert len(self.widths(20)) == 1
 
-    def test_nothing_fits_at_all(self):
-        assert picker.fit(self.COLS, 3) == []
+    def test_a_column_wider_than_the_terminal_is_narrowed_not_dropped(self):
+        """Dropping it rendered a report screen with a header and nothing
+        else. One column cut short is readable; an empty screen is not."""
+        wide = [picker.Column("", 200, str)]
+        assert picker.fit(wide, 80) == [(wide[0], 80)]
+
+    def test_no_room_at_all_means_no_columns(self):
+        assert picker.fit(self.COLS, 0) == []
 
     def test_a_value_is_cut_to_the_width_it_was_given(self):
         assert picker.Column("x", 30, lambda r: "y" * 50).render(None, 8) == "y" * 8
@@ -339,3 +345,82 @@ class TestDeepSearch:
         self.type(p, "x")
         p._key(9)
         assert p.query == "x"
+
+
+class TestFilterable:
+    def test_a_fixed_menu_ignores_typed_characters(self):
+        """A short fixed list is not something anyone searches, and taking the
+        characters only makes the screen look broken."""
+        p = picker.Picker(ROWS, COLUMNS, filterable=False)
+        p._key(ord("c"))
+        assert p.query == "" and len(p.rows) == 3
+
+    def test_a_list_still_filters_by_default(self):
+        p = picker.Picker(ROWS, COLUMNS, search=lambda r: r.company)
+        p._key(ord("c"))
+        assert p.query == "c"
+
+
+class TestDetail:
+    """A list answers "which one"; the detail answers "is it worth it", which
+    needs the whole text rather than a truncated column."""
+
+    def make(self, done=None):
+        done = done if done is not None else []
+        return picker.Detail(
+            "Company · Title", ["a line", "", "another"],
+            [picker.Act("a", "apply", lambda: done.append("applied") or "created",
+                        confirm="create the application?"),
+             picker.Act("s", "score it", lambda: "queued")]), done
+
+    def test_an_action_without_a_confirmation_runs_at_once(self):
+        d, _ = self.make()
+        d._key(ord("s"))
+        assert d.message == "queued"
+
+    def test_a_confirmed_action_asks_first_and_does_nothing_yet(self):
+        d, done = self.make()
+        d._key(ord("a"))
+        assert d.pending.confirm == "create the application?" and done == []
+
+    def test_yes_runs_it(self):
+        d, done = self.make()
+        d._key(ord("a"))
+        d._key(ord("y"))
+        assert done == ["applied"] and d.message == "created" and d.pending is None
+
+    def test_no_cancels_and_the_screen_stays(self):
+        """The thing being decided about stays visible while you decide."""
+        d, done = self.make()
+        d._key(ord("a"))
+        assert d._key(ord("n")) is True
+        assert done == [] and d.pending is None
+
+    def test_esc_also_cancels_the_question_rather_than_leaving(self):
+        d, _ = self.make()
+        d._key(ord("a"))
+        assert d._key(27) is True and d.pending is None
+
+    def test_esc_leaves_when_nothing_is_pending(self):
+        d, _ = self.make()
+        assert d._key(27) is None
+
+    def test_an_unbound_key_does_nothing(self):
+        d, _ = self.make()
+        assert d._key(ord("z")) is True and d.message == ""
+
+    def test_scrolling_never_goes_above_the_top(self):
+        d, _ = self.make()
+        d._key(curses.KEY_UP)
+        assert d.top == 0
+
+
+class TestFold:
+    def test_a_long_line_is_wrapped_to_the_width(self):
+        assert all(len(l) <= 20 for l in picker._fold("word " * 40, 20))
+
+    def test_a_blank_line_survives_as_a_separator(self):
+        assert picker._fold("   ", 40) == [""]
+
+    def test_a_short_line_is_left_alone(self):
+        assert picker._fold("short", 40) == ["short"]

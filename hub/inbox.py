@@ -133,6 +133,20 @@ def set_status(job_id: str, status: str, base: str | None = None,
     _call("/api/status", b, t, {"job_id": job_id, "status": status})
 
 
+def triage(job_ids: list[str] | None = None, base: str | None = None,
+           token: str | None = None) -> dict:
+    """Queue on-server LLM triage. A list of ids scores those; None scores
+    everything pending. The radar takes no count, so a batch of twenty is
+    twenty ids."""
+    b, t = _credentials(base, token)
+    target = job_ids if job_ids else "all_pending"
+    return _call("/api/analyze", b, t, {"mode": "triage", "target": target})
+
+
+def triage_status(base: str | None = None, token: str | None = None) -> dict:
+    return _call("/api/analyze", *_credentials(base, token))
+
+
 def fetch(limit: int = 200, query: str | None = None, sort: str = "score",
           base: str | None = None, token: str | None = None) -> list[Job]:
     """Sorted server-side: once the table outgrows `limit`, ordering a

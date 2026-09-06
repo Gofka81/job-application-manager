@@ -134,9 +134,14 @@ def cmd_inbox(args: argparse.Namespace) -> int:
 
     # A person picks with the arrow keys; an agent, a pipe or CI gets the table.
     if not args.plain and picker.usable():
-        chosen = _pick(shortlist, statuses, args.min_score, args.max_age,
-                       args.limit)
-        return 0 if chosen is None else _take(chosen.job_id, args.yes)
+        taken: set[str] = set()
+        while True:
+            rows = [j for j in shortlist if j.job_id not in taken]
+            chosen = _pick(rows, statuses, args.min_score, args.max_age,
+                           args.limit)
+            if chosen is None:
+                return 0
+            _vacancy_screen(chosen.job_id, on_taken=taken.add)
 
     print(f"{len(shortlist)} of {len(jobs)} jobs\n")
     # The id, not a row number: position is not identity, and the next scan
@@ -202,6 +207,56 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
         # explain.
         detail=lambda j: j.reason,
     ).run()
+
+
+def _vacancy_screen(job_id: str, on_taken=None) -> None:
+    """The whole posting, and what can be done about it, on one screen."""
+    try:
+        job = inbox_mod.detail(job_id)
+    except inbox_mod.RadarError as exc:
+        picker.view([str(exc)], title="could not load the vacancy")
+        return
+
+    cfg = config.load()
+    company, title = job.get("company") or "", job.get("title") or ""
+    header = f"{company} · {title}"
+    bits = [f"fit {job.get('score') or '-'}", job.get("source") or "",
+            job.get("location") or "", job.get("status") or ""]
+    subtitle = " · ".join(b for b in bits if b)
+
+    lines = [job.get("url") or "", ""]
+    if job.get("eval_reason"):
+        lines += [f"triage: {job['eval_reason']}", ""]
+    seen = take_mod.already_applied(cfg.applications, company, title)
+    if seen:
+        lines += [f"already applied: {', '.join(seen)}", ""]
+    body = (job.get("description") or "").strip()
+    lines += body.splitlines() if body else [
+        "The radar holds no text for this posting.",
+        "Taking it writes a jd.md to paste the posting into."]
+
+    def apply_now() -> str:
+        folder, _ = take_mod.create(cfg.applications, job)
+        try:
+            inbox_mod.set_status(job_id, "saved")
+        except inbox_mod.RadarError as exc:
+            return f"created {folder.name}, but the radar was not told: {exc}"
+        if on_taken:
+            on_taken(job_id)
+        return f"created {folder.name} — next: /tailor"
+
+    def score_now() -> str:
+        try:
+            inbox_mod.triage([job_id])
+        except inbox_mod.RadarError as exc:
+            return str(exc)
+        return "queued for triage — the score appears once the radar runs it"
+
+    actions = [picker.Act("a", "apply", apply_now,
+                          confirm="create the application?")]
+    if job.get("score") is None:
+        actions.append(picker.Act("s", "score it", score_now))
+    picker.Detail(header, lines, actions, subtitle=subtitle).run()
 
 
 def _resolve(query: str, jobs: list):
@@ -292,6 +347,8 @@ def _menu_actions(cfg) -> list[Action]:
         Action("apps", "applications",
                f"{len(applications)} in data/applications",
                lambda: _list_applications(cfg)),
+        Action("triage", "triage", "score vacancies the radar has not rated",
+               lambda: _triage_screen(cfg)),
         Action("gaps", "gaps", "what the market wants that you lack",
                lambda: _gaps_screen(cfg)),
         Action("answers", "answer bank",
@@ -507,6 +564,7 @@ def _gap_detail(cfg, term: str) -> list[str]:
 
 def cmd_menu(args: argparse.Namespace) -> int:
     """One entry point, so nothing has to be remembered or typed."""
+    _load_env()
     cfg = config.load()
     if not picker.usable():
         main(["--help"])
@@ -519,6 +577,7 @@ def cmd_menu(args: argparse.Namespace) -> int:
              picker.Column("", 46, lambda a: a.hint)],
             title="job application hub",
             search=lambda a: f"{a.label} {a.hint}",
+            filterable=False,
         ).run()
         if chosen is None or chosen.key == "quit":
             return 0
@@ -526,6 +585,54 @@ def cmd_menu(args: argparse.Namespace) -> int:
             chosen.run()
         except KeyboardInterrupt:
             return 0
+
+
+def cmd_triage(args: argparse.Namespace) -> int:
+    """Ask the radar to score vacancies it has not scored yet."""
+    _load_env()
+    try:
+        jobs = inbox_mod.fetch(limit=args.limit, sort="seen")
+        pending = [j for j in jobs if j.score is None and j.status == "new"]
+        if not pending:
+            print("nothing left to score")
+            return 0
+        batch = [j.job_id for j in pending[: args.count]]
+        inbox_mod.triage(batch)
+    except inbox_mod.RadarError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"queued {len(batch)} of {len(pending)} unscored vacancies")
+    print("the radar scores them in the background; run the inbox again later")
+    return 0
+
+
+def _triage_screen(cfg) -> int:
+    _load_env()
+    try:
+        jobs = inbox_mod.fetch(limit=300, sort="seen")
+    except inbox_mod.RadarError as exc:
+        picker.view([str(exc)], title="triage")
+        return 0
+    pending = [j for j in jobs if j.score is None and j.status == "new"]
+    if not pending:
+        picker.view(["Everything new has a score."], title="triage")
+        return 0
+
+    def run() -> str:
+        batch = [j.job_id for j in pending[:20]]
+        try:
+            inbox_mod.triage(batch)
+        except inbox_mod.RadarError as exc:
+            return str(exc)
+        return f"queued {len(batch)} — scores appear as the radar works through them"
+
+    lines = [f"{len(pending)} new vacancies have no fit score yet.", ""]
+    lines += [f"  {j.company} · {j.title}" for j in pending[:20]]
+    picker.Detail("triage", lines,
+                  [picker.Act("s", "score the first 20", run,
+                              confirm="queue 20 for scoring?")],
+                  subtitle="scoring costs model time on the Pi").run()
+    return 0
 
 
 def cmd_take(args: argparse.Namespace) -> int:
@@ -699,6 +806,11 @@ def main(argv: list[str] | None = None) -> int:
     ib.add_argument("--plain", action="store_true",
                     help="print the table instead of the picker")
     ib.set_defaults(func=cmd_inbox)
+
+    tr = sub.add_parser("triage", help="score vacancies the radar has not rated")
+    tr.add_argument("--count", type=int, default=20)
+    tr.add_argument("--limit", type=int, default=300)
+    tr.set_defaults(func=cmd_triage)
 
     tk = sub.add_parser("take", help="turn a vacancy into an application")
     tk.add_argument("query", help="job id, or part of the company or title")

@@ -58,6 +58,12 @@ def fit(columns: Sequence[Column], available: int) -> list[tuple[Column, int]]:
         out.append((column, column.width))
         used += need
 
+    # A single column wider than the terminal used to drop everything, so a
+    # report screen rendered its header and nothing else. Narrow it instead:
+    # one column cut short is still readable, an empty screen is not.
+    if not out and columns and available > 0:
+        return [(columns[0], available)]
+
     if out and (spare := available - used) > 0:
         flexible = next((i for i, (c, _) in enumerate(out) if c.flex), None)
         if flexible is None:
@@ -73,7 +79,8 @@ class Picker:
                  detail: Callable[[object], str] | None = None,
                  modes: Sequence[tuple[str, Callable[[object], bool]]] | None = None,
                  deep: Callable[[str], Sequence] | None = None,
-                 deep_label: str = "deep search"):
+                 deep_label: str = "deep search",
+                 filterable: bool = True):
         self.all = list(rows)
         # Cycled with left/right. A filter the caller wants reachable without
         # leaving the screen and rerunning the command with a flag.
@@ -86,6 +93,9 @@ class Picker:
         self.deep_label = deep_label
         self.deep_query = ""
         self.base = list(rows)
+        # A short fixed list is not something anyone searches, and letting it
+        # take typed characters only makes the screen look broken.
+        self.filterable = filterable
         self.columns = list(columns)
         self.title = title
         self.search = search or (lambda r: str(r))
@@ -206,7 +216,9 @@ class Picker:
                 screen.addnstr(2 + body + j, 2, chunk, width - 3,
                                curses.color_pair(3))
 
-        hint = "  ↑↓ move   enter choose   type to filter"
+        hint = "  ↑↓ move   enter choose"
+        if self.filterable:
+            hint += "   type to filter"
         if self.deep:
             hint += f"   tab {self.deep_label}"
         if self.modes:
@@ -263,7 +275,7 @@ class Picker:
         elif key in (curses.KEY_BACKSPACE, 127, 8):
             self.query = self.query[:-1]
             self.cursor = 0
-        elif 32 <= key < 127:
+        elif 32 <= key < 127 and self.filterable:
             self.query += chr(key)
             self.cursor = 0
         return False
@@ -293,5 +305,136 @@ def view(lines: Sequence[str], title: str = "") -> None:
     back, and nothing else is needed to leave.
     """
     rows = list(lines) or ["nothing to show"]
-    Picker(rows, [Column("", 200, lambda line: line)], title=title,
+    Picker(rows, [Column("", 200, lambda line: line, flex=True)], title=title,
            search=lambda line: line).run()
+
+
+@dataclass
+class Act:
+    """One thing you can do from a detail screen.
+
+    `confirm` turns the action bar into a yes/no question instead of opening
+    another screen: the thing being decided about stays visible while you
+    decide.
+    """
+    key: str
+    label: str
+    run: Callable[[], str]
+    confirm: str | None = None
+
+
+class Detail:
+    """One record in full, with what you can do to it along the bottom.
+
+    A list answers "which one"; this answers "is it worth it", which needs the
+    whole text rather than a truncated column. Letters are actions here
+    because there is nothing to filter.
+    """
+
+    def __init__(self, title: str, lines: Sequence[str],
+                 actions: Sequence[Act] = (), subtitle: str = ""):
+        self.title = title
+        self.subtitle = subtitle
+        self.lines = list(lines)
+        self.actions = list(actions)
+        self.top = 0
+        self.message = ""
+        self.pending: Act | None = None
+
+    def run(self) -> None:
+        curses.wrapper(self._loop)
+
+    def _loop(self, screen):
+        curses.curs_set(0)
+        if curses.has_colors():
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)
+            curses.init_pair(2, curses.COLOR_CYAN, -1)
+            curses.init_pair(3, curses.COLOR_YELLOW, -1)
+        while True:
+            self._draw(screen)
+            if self._key(Picker.read_key(screen)) is None:
+                return
+
+    def _draw(self, screen):
+        screen.erase()
+        height, width = screen.getmaxyx()
+        body = max(1, height - 5)
+        wrapped = []
+        for line in self.lines:
+            wrapped += _fold(line, width - 4) or [""]
+        self.top = max(0, min(self.top, max(0, len(wrapped) - body)))
+
+        screen.addnstr(0, 0, self.title[: width - 1], width - 1,
+                       curses.color_pair(2) | curses.A_BOLD)
+        if self.subtitle:
+            screen.addnstr(1, 0, "  " + self.subtitle, width - 1, curses.A_DIM)
+        for i, line in enumerate(wrapped[self.top:self.top + body]):
+            screen.addnstr(2 + i, 2, line, width - 3)
+
+        if len(wrapped) > body:
+            pos = f"{self.top + 1}-{min(self.top + body, len(wrapped))} of {len(wrapped)}"
+            screen.addnstr(height - 3, 2, pos, width - 3, curses.A_DIM)
+        if self.message:
+            screen.addnstr(height - 2, 2, self.message[: width - 3], width - 3,
+                           curses.color_pair(3))
+
+        if self.pending:
+            bar = f"  {self.pending.confirm}   [y] yes   [n] no"
+            style = curses.color_pair(1)
+        else:
+            bar = "  ↑↓ scroll" + "".join(
+                f"   [{a.key}] {a.label}" for a in self.actions) + "   esc back"
+            style = curses.A_DIM
+        screen.addnstr(height - 1, 0, bar.ljust(width - 1)[: width - 1],
+                       width - 1, style)
+        screen.refresh()
+
+    def _key(self, key):
+        """None ends the screen; anything else keeps it open."""
+        height = 20
+        if self.pending:
+            if key in (ord("y"), ord("Y")):
+                action, self.pending = self.pending, None
+                self.message = action.run() or ""
+            elif key in (ord("n"), ord("N"), 27):
+                self.pending = None
+                self.message = "cancelled"
+            return True
+
+        if key == curses.KEY_DOWN:
+            self.top += 1
+        elif key == curses.KEY_UP:
+            self.top = max(0, self.top - 1)
+        elif key == curses.KEY_NPAGE:
+            self.top += height
+        elif key == curses.KEY_PPAGE:
+            self.top = max(0, self.top - height)
+        elif key in (27, 3, 4):
+            return None
+        else:
+            for action in self.actions:
+                if key == ord(action.key):
+                    if action.confirm:
+                        self.pending = action
+                        self.message = ""
+                    else:
+                        self.message = action.run() or ""
+                    break
+        return True
+
+
+def _fold(text: str, width: int) -> list[str]:
+    """Wrap one line to the screen, keeping blank lines as separators."""
+    if not text.strip():
+        return [""]
+    out, line = [], ""
+    for word in text.split():
+        if len(line) + len(word) + 1 > width:
+            out.append(line)
+            line = word
+        else:
+            line = f"{line} {word}".strip()
+    if line:
+        out.append(line)
+    return out
