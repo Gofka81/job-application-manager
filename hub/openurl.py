@@ -10,6 +10,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 
 def opener() -> list[str] | None:
@@ -36,3 +37,15 @@ def open_url(url: str) -> str:
     except (OSError, subprocess.SubprocessError) as exc:
         return f"could not open it: {exc}"
     return "opened in the browser"
+
+
+def open_path(path) -> str:
+    """Open a local file in whatever the desktop uses for it.
+
+    Same mechanism as a link, different message: "opened in the browser" is
+    wrong and briefly confusing when what opened was a PDF viewer.
+    """
+    if not path or not Path(path).exists():
+        return "not there to open"
+    result = open_url(str(path))
+    return "opened" if result == "opened in the browser" else result

@@ -80,6 +80,7 @@ in its own right.
 jam                                         # menu: arrow keys all the way down
 jam inbox                                   # what job-radar found, arrow keys to pick
 jam take "data idols"                       # turn a vacancy into an application
+jam build <app_id>                          # rebuild that application's CV and check it
 jam check ~/CV/applications --max-pages 1   # check finished PDFs against the master
 jam ask "Years of SQL?" --type integer      # answer a form question from the bank
 jam learn "Notice period?" "1 month"        # record one the human just gave

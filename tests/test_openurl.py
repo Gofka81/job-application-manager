@@ -27,3 +27,27 @@ class TestOpen:
 
     def test_there_is_an_opener_on_this_platform(self):
         assert openurl.opener() is not None
+
+
+class TestOpenPath:
+    """Same mechanism as a link, different message: "opened in the browser" is
+    wrong and briefly confusing when what opened was a PDF viewer."""
+
+    def test_a_missing_file_is_said_so_rather_than_shelled_out(self, tmp_path):
+        assert openurl.open_path(tmp_path / "nope.pdf") == "not there to open"
+
+    def test_an_existing_file_is_opened(self, tmp_path, monkeypatch):
+        pdf = tmp_path / "cv.pdf"
+        pdf.write_bytes(b"%PDF")
+        monkeypatch.setattr(openurl, "open_url",
+                            lambda url: "opened in the browser")
+        assert openurl.open_path(pdf) == "opened"
+
+    def test_a_failure_keeps_its_own_message(self, tmp_path, monkeypatch):
+        pdf = tmp_path / "cv.pdf"
+        pdf.write_bytes(b"%PDF")
+        monkeypatch.setattr(openurl, "open_url", lambda url: "could not open it")
+        assert openurl.open_path(pdf) == "could not open it"
+
+    def test_nothing_at_all_does_not_raise(self):
+        assert openurl.open_path(None) == "not there to open"

@@ -18,7 +18,7 @@ from pathlib import Path
 import yaml
 
 from hub import (agent, answerbank, atscheck, backfill, bootstrap, check as check_mod, config,
-                 coverage, inbox as inbox_mod, picker, render,
+                 coverage, inbox as inbox_mod, latex, picker, render,
                  openurl, submit as submit_mod, take as take_mod)
 
 
@@ -647,7 +647,36 @@ def _list_applications(cfg) -> int:
         ).run()
         if chosen is None:
             return 0
-        picker.view(_application_detail(chosen), title=chosen.get("app_id", ""))
+        _application_screen(chosen, cfg)
+
+
+def _application_screen(record: dict, cfg) -> None:
+    """One application in full, with the two things worth doing to it.
+
+    Rebuilding lives here rather than only on the command line because the
+    reason to rebuild is almost always something read on this screen: a page
+    count over budget, a claim the gate rejected.
+    """
+    folder = record["_folder"]
+    detail = picker.Detail(record.get("app_id", ""),
+                           _application_detail(record))
+
+    def rebuild() -> str:
+        ok, lines = _rebuild(folder, cfg)
+        detail.lines = _application_detail(record) + ["", "  rebuild", *[
+            f"    {line}" for line in lines]]
+        return "rebuilt, passes" if ok else "rebuilt, does not pass"
+
+    actions = [picker.Act("b", "rebuild cv", rebuild)]
+    url = record.get("source_url")
+    if url:
+        actions.append(picker.Act("o", "open posting",
+                                  lambda: openurl.open_url(url)))
+    if (folder / "cv.pdf").exists():
+        actions.append(picker.Act("v", "view cv",
+                                  lambda: openurl.open_path(folder / "cv.pdf")))
+    detail.actions = actions
+    detail.run()
 
 
 def _answers_screen(cfg) -> int:
@@ -800,6 +829,47 @@ def cmd_menu(args: argparse.Namespace) -> int:
             chosen.run()
         except KeyboardInterrupt:
             return 0
+
+
+def _rebuild(folder: Path, cfg) -> tuple[bool, list[str]]:
+    """Compile the folder's cv.tex and check what came out.
+
+    Returns whether it is usable and the lines to show. Editing cv.tex by
+    hand is the normal way to fix a CV that ran long, and until now the only
+    way to see the result was to remember latexmk and re-run `jam check`
+    separately. Doing both here means a rebuild cannot quietly leave a PDF
+    that no longer passes.
+    """
+    try:
+        built = latex.compile_tex(folder, cfg.data / "master")
+    except latex.BuildError as exc:
+        return False, [str(exc)]
+    if not built.ok:
+        return False, ["latex failed, the old cv.pdf is left untouched", "",
+                       *latex.errors(built.log)]
+
+    master = yaml.safe_load(cfg.master_profile.read_text())
+    try:
+        report = check_mod.check(built.pdf, render.source_text(master), [],
+                                 set(cfg.factgate_allow),
+                                 cfg.thresholds.cv_max_pages)
+    except check_mod.atscheck.ExtractorMissing as exc:
+        return True, ["built cv.pdf", f"check skipped: {exc}"]
+    return report.ok, ["built cv.pdf", "", *report.report().splitlines()]
+
+
+def cmd_build(args: argparse.Namespace) -> int:
+    """Rebuild one application's CV from its own cv.tex."""
+    cfg = config.load()
+    folder = cfg.applications / args.app
+    if not folder.is_dir():
+        print(f"no such application: {args.app}", file=sys.stderr)
+        return 1
+    ok, lines = _rebuild(folder, cfg)
+    print("\n".join(lines))
+    if args.clean:
+        print(f"cleaned {latex.clean(folder)} working file(s)")
+    return 0 if ok else 3
 
 
 def _tailor(app_id: str, model: str | None = None) -> int:
@@ -1132,6 +1202,12 @@ def main(argv: list[str] | None = None) -> int:
     ib.add_argument("--plain", action="store_true",
                     help="print the table instead of the picker")
     ib.set_defaults(func=cmd_inbox)
+
+    bl = sub.add_parser("build", help="rebuild one application's CV from its cv.tex")
+    bl.add_argument("app", help="application id (the folder name)")
+    bl.add_argument("--clean", action="store_true",
+                    help="remove latexmk's working files afterwards")
+    bl.set_defaults(func=cmd_build)
 
     tl = sub.add_parser("tailor", help="have the agent write the CV for one application")
     tl.add_argument("app", help="application id")

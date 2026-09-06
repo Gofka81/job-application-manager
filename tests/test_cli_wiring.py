@@ -276,3 +276,126 @@ requirements:
         empty = tmp_path / "empty"
         empty.mkdir()
         assert cli._detail_checks(empty) == []
+
+
+class TestRebuild:
+    """Compiling and checking are one step here on purpose: a rebuild that
+    left a PDF failing its checks used to look exactly like a good one."""
+
+    @pytest.fixture
+    def folder(self, tmp_path):
+        app = tmp_path / "2026-09-06--northwind--data-engineer"
+        app.mkdir()
+        return app
+
+    @pytest.fixture
+    def cfg(self):
+        from hub import config
+        return config.load()
+
+    def compiles(self, monkeypatch, folder, ok=True):
+        from hub import latex
+        built = latex.Built(pdf=folder / ("cv.pdf" if ok else "gone"), log="! bad")
+        monkeypatch.setattr(cli.latex, "compile_tex", lambda *a, **k: built)
+        return built
+
+    def checks(self, monkeypatch, ok=True, text="cv.pdf: pass (1 page(s))"):
+        class Report:
+            def report(self):
+                return text
+        report = Report()
+        report.ok = ok
+        monkeypatch.setattr(cli.check_mod, "check", lambda *a, **k: report)
+
+    def test_a_good_build_reports_the_check_not_just_the_build(
+            self, folder, cfg, monkeypatch):
+        (folder / "cv.pdf").write_bytes(b"%PDF")
+        self.compiles(monkeypatch, folder)
+        self.checks(monkeypatch)
+        ok, lines = cli._rebuild(folder, cfg)
+        assert ok and any("pass" in line for line in lines)
+
+    def test_a_pdf_that_fails_its_checks_is_not_a_success(
+            self, folder, cfg, monkeypatch):
+        (folder / "cv.pdf").write_bytes(b"%PDF")
+        self.compiles(monkeypatch, folder)
+        self.checks(monkeypatch, ok=False, text="cv.pdf: FAIL\n  2 pages")
+        ok, lines = cli._rebuild(folder, cfg)
+        assert ok is False and any("2 pages" in line for line in lines)
+
+    def test_a_latex_failure_says_the_old_pdf_survived(
+            self, folder, cfg, monkeypatch):
+        self.compiles(monkeypatch, folder, ok=False)
+        ok, lines = cli._rebuild(folder, cfg)
+        assert ok is False
+        assert any("left untouched" in line for line in lines)
+        assert any("! bad" in line for line in lines)
+
+    def test_a_folder_that_cannot_be_built_explains_itself(
+            self, folder, cfg, monkeypatch):
+        from hub import latex
+
+        def refuse(*a, **k):
+            raise latex.BuildError("no cv.tex in northwind")
+        monkeypatch.setattr(cli.latex, "compile_tex", refuse)
+        ok, lines = cli._rebuild(folder, cfg)
+        assert ok is False and lines == ["no cv.tex in northwind"]
+
+    def test_a_missing_extractor_does_not_undo_a_real_build(
+            self, folder, cfg, monkeypatch):
+        """The PDF was produced; only the verdict on it is unavailable."""
+        (folder / "cv.pdf").write_bytes(b"%PDF")
+        self.compiles(monkeypatch, folder)
+
+        def missing(*a, **k):
+            raise cli.check_mod.atscheck.ExtractorMissing("no pdftotext")
+        monkeypatch.setattr(cli.check_mod, "check", missing)
+        ok, lines = cli._rebuild(folder, cfg)
+        assert ok and any("skipped" in line for line in lines)
+
+
+class TestApplicationScreenActions:
+    """The reason to rebuild is almost always something read on this screen."""
+
+    def screen(self, tmp_path, files=()):
+        folder = tmp_path / "2026-09-06--northwind--data-engineer"
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in files:
+            (folder / name).write_text("x")
+        record = {"app_id": folder.name, "_folder": folder,
+                  "company": "Northwind", "submitted_at": None,
+                  "source_url": "https://example.com/1"}
+        seen = {}
+        with patch.object(picker.Detail, "run",
+                          lambda self: seen.update(detail=self)):
+            from hub import config
+            cli._application_screen(record, config.load())
+        return seen["detail"]
+
+    def test_rebuilding_is_always_offered(self, tmp_path):
+        keys = [a.key for a in self.screen(tmp_path).actions]
+        assert "b" in keys
+
+    def test_the_cv_can_only_be_viewed_once_it_exists(self, tmp_path):
+        assert "v" not in [a.key for a in self.screen(tmp_path).actions]
+        assert "v" in [a.key for a in
+                       self.screen(tmp_path, ["cv.pdf"]).actions]
+
+    def test_rebuilding_refreshes_what_the_screen_shows(self, tmp_path,
+                                                        monkeypatch):
+        """Otherwise the page count on screen is the one from before the fix."""
+        monkeypatch.setattr(cli, "_rebuild",
+                            lambda folder, cfg: (True, ["cv.pdf: pass"]))
+        detail = self.screen(tmp_path, ["cv.pdf"])
+        rebuild = next(a for a in detail.actions if a.key == "b")
+        message = rebuild.run()
+        assert "passes" in message
+        assert any("cv.pdf: pass" in line for line in detail.lines)
+
+    def test_a_failed_rebuild_says_so_rather_than_reporting_success(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli, "_rebuild",
+                            lambda folder, cfg: (False, ["cv.pdf: FAIL"]))
+        detail = self.screen(tmp_path, ["cv.pdf"])
+        rebuild = next(a for a in detail.actions if a.key == "b")
+        assert "does not pass" in rebuild.run()

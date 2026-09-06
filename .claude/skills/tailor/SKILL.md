@@ -63,11 +63,15 @@ Check it: `jam coverage --app <app_id>`.
 Work in the application folder, never in `data/master/`:
 
 ```sh
-cd data/applications/<app_id>
-cp ../../master/cv.tex ../../master/resume.cls .
-# edit cv.tex
-latexmk -pdf -interaction=nonstopmode -halt-on-error cv.tex
+cp data/master/cv.tex data/master/resume.cls data/applications/<app_id>/
+# edit data/applications/<app_id>/cv.tex
+jam build <app_id>
 ```
+
+`jam build` compiles the folder's own `cv.tex` and runs the checks on what
+came out, so a rebuild cannot leave a PDF that no longer passes. Editing and
+re-running it is the normal loop; the CV that runs to two pages gets cut and
+built again until it does not.
 
 What you may change, in the order that pays:
 
@@ -90,6 +94,8 @@ application looks like it came from the same person; if it does not fit, cut
 content.
 
 ### 4. Check it
+
+`jam build` already ran this. To re-check a PDF without rebuilding:
 
 ```
 jam check data/applications/<app_id>/cv.pdf --max-pages 1
