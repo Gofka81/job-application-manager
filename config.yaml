@@ -5,6 +5,9 @@
 
 paths:
   data: data
+  # Application folders live wherever the thing producing CVs puts them.
+  # While that is tailor-cv (D73), this points outside the repository.
+  applications: ~/Developer/DataEng/cv-tailor/applications
   templates: templates
 
 # D15 — both provisional. UK replies come later than the 14/21 norm of

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from hub import check as check_mod, config, coverage, render
+from hub import backfill, check as check_mod, config, coverage, render
 
 
 def cmd_render(args: argparse.Namespace) -> int:
@@ -66,6 +66,37 @@ def cmd_check(args: argparse.Namespace) -> int:
     return 3 if failed else 0
 
 
+def cmd_backfill(args: argparse.Namespace) -> int:
+    """Recover coverage records from tailor-cv's prose logs."""
+    cfg = config.load()
+    folders = sorted(p for p in cfg.applications.iterdir() if p.is_dir())
+    written = skipped = 0
+    for folder in folders:
+        doc = backfill.convert(folder)
+        if doc is None:
+            skipped += 1
+            continue
+        out = folder / "coverage.yaml"
+        if out.exists() and not args.force:
+            skipped += 1
+            continue
+        if args.apply:
+            out.write_text(
+                "# Recovered from changes.md. `evidence` is absent because the\n"
+                "# prose names bullets in words, not master ids (see hub/backfill.py).\n"
+                + yaml.safe_dump(doc, sort_keys=False, allow_unicode=True,
+                                 width=88))
+        written += 1
+        n = len(doc["requirements"])
+        miss = sum(r["status"] == "missing" for r in doc["requirements"])
+        print(f"{folder.name}: {n} requirements, {miss} missing")
+    verb = "wrote" if args.apply else "would write"
+    print(f"\n{verb} {written}, skipped {skipped}")
+    if not args.apply:
+        print("re-run with --apply to write the files")
+    return 0
+
+
 def cmd_coverage(args: argparse.Namespace) -> int:
     cfg = config.load()
     folder = cfg.applications / args.app
@@ -94,6 +125,12 @@ def cmd_gaps(args: argparse.Namespace) -> int:
     required, preferred, seen = coverage.aggregate(cfg.applications)
     if not seen:
         print("no applications have recorded coverage yet")
+        return 0
+    if args.terms:
+        counts = coverage.terms(cfg.applications, args.min_count)
+        print(f"terms recurring in gaps across {seen} application(s)\n")
+        for term, n in counts.most_common():
+            print(f"  {n:3}x  {term}")
         return 0
     print(f"across {seen} application(s) with recorded coverage\n")
     for label, counter in (("required", required), ("preferred", preferred)):
@@ -139,12 +176,19 @@ def main(argv: list[str] | None = None) -> int:
                     help="also require the contact email to extract")
     ck.set_defaults(func=cmd_check)
 
+    bf = sub.add_parser("backfill", help="recover coverage records from changes.md")
+    bf.add_argument("--apply", action="store_true")
+    bf.add_argument("--force", action="store_true", help="overwrite existing")
+    bf.set_defaults(func=cmd_backfill)
+
     cv = sub.add_parser("coverage", help="validate and summarise an application's coverage")
     cv.add_argument("--app", required=True)
     cv.set_defaults(func=cmd_coverage)
 
     g = sub.add_parser("gaps", help="what the market wants that the master lacks")
     g.add_argument("--min-count", type=int, default=1)
+    g.add_argument("--terms", action="store_true",
+                   help="count terms inside gaps rather than whole phrases")
     g.set_defaults(func=cmd_gaps)
 
     c = sub.add_parser("config", help="show resolved configuration")

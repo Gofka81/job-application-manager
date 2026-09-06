@@ -22,6 +22,7 @@ nothing else in WF7 does.
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +51,7 @@ def valid_ids(master: dict) -> set[str]:
 
 
 def validate(master: dict, doc: dict) -> None:
+    backfilled = (doc or {}).get("source") == "backfill"
     reqs = (doc or {}).get("requirements")
     if not reqs:
         raise CoverageError("coverage file has no `requirements`")
@@ -63,7 +65,7 @@ def validate(master: dict, doc: dict) -> None:
         if r.get("status") not in STATUSES:
             raise CoverageError(f"{where}: `status` must be one of {STATUSES}")
         evidence = r.get("evidence") or []
-        if r["status"] != "missing" and not evidence:
+        if r["status"] != "missing" and not evidence and not backfilled:
             raise CoverageError(
                 f"{where}: status {r['status']!r} but no evidence — "
                 f"a claim of coverage has to point at something"
@@ -121,6 +123,40 @@ def summarize(doc: dict) -> Summary:
 
 def load(path: Path) -> dict:
     return yaml.safe_load(path.read_text()) or {}
+
+
+# The logs' own vocabulary for describing a gap, rather than the thing missing.
+# "Azure breadth" and "Databricks recency" are two ways of naming Azure and
+# Databricks, and counting the qualifier tells you nothing.
+SCAFFOLDING = frozenset({
+    "and", "or", "the", "a", "an", "of", "in", "on", "for", "to", "with", "at",
+    "by", "no", "not", "none", "any", "some", "own", "per", "its",
+    "experience", "breadth", "recency", "depth", "exposure", "gap", "gaps",
+    "framing", "thin", "only", "side", "specifically", "specific", "named",
+    "formal", "direct", "real", "hands", "scale", "core", "stack", "tools",
+    "tooling", "platform", "platforms", "data", "work", "role", "claimed",
+})
+
+
+def terms(folder: Path, min_count: int = 2) -> Counter:
+    """Count the terms inside gap texts, not the whole phrases.
+
+    Exact phrases undercount: "Microsoft Fabric" and "Fabric" are the same
+    gap written twice. Ordinary English is kept here, unlike the CV check —
+    "streaming", "mentoring" and "financial services" are the signal, not
+    noise, so only the logs' own scaffolding words are dropped.
+    """
+    counts = Counter()
+    for f in sorted(folder.glob("*/coverage.yaml")):
+        doc = load(f)
+        for r in doc.get("requirements") or []:
+            if r.get("status") != "missing":
+                continue
+            for word in re.findall(r"[A-Za-z][A-Za-z0-9+#./-]+", str(r["text"])):
+                word = word.strip("./-").lower()
+                if len(word) > 2 and word not in SCAFFOLDING:
+                    counts[word] += 1
+    return Counter({t: n for t, n in counts.items() if n >= min_count})
 
 
 def aggregate(folder: Path) -> tuple[Counter, Counter, int]:

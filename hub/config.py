@@ -54,9 +54,16 @@ class Config:
     def logs(self) -> Path:
         return self.data / "logs"
 
+    applications_override: Path | None = None
+
     @property
     def applications(self) -> Path:
-        return self.data / "applications"
+        """Where application folders live.
+
+        `tailor-cv` owns them while it is the thing producing CVs (D73), so
+        this can point outside the repository.
+        """
+        return self.applications_override or self.data / "applications"
 
 
 def _resolve(value: str) -> Path:
@@ -77,4 +84,6 @@ def load(path: Path | None = None) -> Config:
         detector=Detector(**raw["detector"]),
         followup=Followup(**raw["followup"]),
         factgate_allow=tuple(raw.get("factgate", {}).get("allow", [])),
+        applications_override=(_resolve(paths["applications"])
+                               if paths.get("applications") else None),
     )

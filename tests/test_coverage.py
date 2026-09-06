@@ -91,3 +91,60 @@ class TestAggregate:
             (app / "coverage.yaml").write_text(yaml.safe_dump(
                 doc(req(text, status="missing", evidence=[]))))
         assert coverage.aggregate(tmp_path)[0]["dbt models"] == 2
+
+
+class TestTerms:
+    """Whole phrases undercount: "Microsoft Fabric" and "Fabric" are one gap
+    written twice."""
+
+    def write(self, tmp_path, *texts):
+        for i, t in enumerate(texts):
+            app = tmp_path / f"app{i}"
+            app.mkdir()
+            (app / "coverage.yaml").write_text(yaml.safe_dump({
+                "source": "backfill",
+                "requirements": [{"text": t, "weight": "required",
+                                  "status": "missing", "evidence": []}]}))
+        return tmp_path
+
+    def test_a_term_is_counted_across_different_phrasings(self, tmp_path):
+        counts = coverage.terms(self.write(tmp_path, "Microsoft Fabric",
+                                           "Fabric and Power BI"), min_count=2)
+        assert counts["fabric"] == 2
+
+    def test_the_logs_own_qualifiers_are_dropped(self, tmp_path):
+        """"Azure breadth" and "Azure recency" name Azure twice."""
+        counts = coverage.terms(self.write(tmp_path, "Azure breadth",
+                                           "Azure recency"), min_count=2)
+        assert counts["azure"] == 2 and "breadth" not in counts
+
+    def test_ordinary_english_is_kept_here(self, tmp_path):
+        """Unlike the CV check: "streaming" and "mentoring" are the signal."""
+        counts = coverage.terms(self.write(tmp_path, "Streaming at scale",
+                                           "Streaming pipelines"), min_count=2)
+        assert counts["streaming"] == 2
+
+    def test_below_the_floor_is_omitted(self, tmp_path):
+        assert "kafka" not in coverage.terms(self.write(tmp_path, "Kafka"), 2)
+
+    def test_covered_requirements_are_not_counted(self, tmp_path):
+        app = tmp_path / "a"
+        app.mkdir()
+        (app / "coverage.yaml").write_text(yaml.safe_dump({
+            "requirements": [{"text": "Kafka", "weight": "required",
+                              "status": "covered", "evidence": ["skills.python"]}]}))
+        assert coverage.terms(tmp_path, 1) == {}
+
+
+class TestBackfillValidation:
+    def test_a_backfilled_record_may_omit_evidence(self):
+        """The prose names bullets in words, not master ids, so guessing the
+        mapping would put unverifiable claims in a file whose point is that
+        coverage is checkable."""
+        coverage.validate(MASTER, {"source": "backfill", "requirements": [
+            {"text": "X", "weight": "required", "status": "covered",
+             "evidence": []}]})
+
+    def test_a_fresh_record_still_may_not(self):
+        with pytest.raises(coverage.CoverageError, match="no evidence"):
+            coverage.validate(MASTER, doc(req(status="covered", evidence=[])))
