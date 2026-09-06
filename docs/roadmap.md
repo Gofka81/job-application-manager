@@ -96,7 +96,7 @@ The main block. Until it works, nothing else has anything to stand on.
       settled; it needs a template and a brief first
 - [x] **B1.7f** `S` Tailoring skill in `.claude/skills/tailor/`, bound to the
       `coverage.yaml` / `tailoring.yaml` contracts (D34)
-- [ ] **B1.8** `M` Answer bank: schema, bootstrap over 30-40 standard
+- [~] **B1.8** `M` Answer bank: schema, bootstrap over 30-40 standard
       questions, extraction from old CVs and LinkedIn
 - [ ] **B1.9** `M` The agent fills the form, matches slots, asks in a batch
       per page
