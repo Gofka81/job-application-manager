@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import os
 import re
 import sys
@@ -16,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from hub import (answerbank, backfill, bootstrap, check as check_mod, config,
+from hub import (agent, answerbank, backfill, bootstrap, check as check_mod, config,
                  coverage, inbox as inbox_mod, picker, render,
                  openurl, submit as submit_mod, take as take_mod)
 
@@ -135,13 +136,31 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     # A person picks with the arrow keys; an agent, a pipe or CI gets the table.
     if not args.plain and picker.usable():
         taken: set[str] = set()
+        queued: list[str] = []
+
+        def remember(job_id: str, app_id: str) -> None:
+            taken.add(job_id)
+            queued.append(app_id)
+
         while True:
             rows = [j for j in shortlist if j.job_id not in taken]
             chosen = _pick(rows, statuses, args.min_score, args.max_age,
                            args.limit)
             if chosen is None:
-                return 0
-            _vacancy_screen(chosen.job_id, on_taken=taken.add)
+                break
+            _vacancy_screen(chosen.job_id, on_taken=remember)
+
+        # Tailoring runs once the screens are closed rather than inside them:
+        # it takes a minute and has plenty to say, and neither fits behind a
+        # list you are still browsing.
+        if args.no_tailor:
+            for app_id in queued:
+                print(f"taken: {app_id} — next: /tailor {app_id}")
+            return 0
+        code = 0
+        for app_id in queued:
+            code = _tailor(app_id) or code
+        return code
 
     print(f"{len(shortlist)} of {len(jobs)} jobs\n")
     # The id, not a row number: position is not identity, and the next scan
@@ -376,8 +395,8 @@ def _vacancy_screen(job_id: str, on_taken=None) -> None:
         except inbox_mod.RadarError as exc:
             return f"created {folder.name}, but the radar was not told: {exc}"
         if on_taken:
-            on_taken(job_id)
-        return f"created {folder.name} — next: /tailor"
+            on_taken(job_id, folder.name)
+        return f"created {folder.name}"
 
     def score_now() -> str:
         try:
@@ -739,6 +758,46 @@ def cmd_menu(args: argparse.Namespace) -> int:
             return 0
 
 
+def _tailor(app_id: str) -> int:
+    """Hand the tailoring to the agent and show what it did."""
+    cfg = config.load()
+    if not (cfg.applications / app_id).is_dir():
+        print(f"no such application: {app_id}", file=sys.stderr)
+        return 1
+    print(f"tailoring {app_id} — this takes a minute\n")
+    try:
+        result = agent.tailor(app_id, config.ROOT)
+    except agent.AgentMissing as exc:
+        print(exc, file=sys.stderr)
+        print(f"\nrun it yourself with:  /tailor {app_id}", file=sys.stderr)
+        return 1
+    except subprocess.TimeoutExpired:
+        print("the agent ran out of time; the folder is left as it was",
+              file=sys.stderr)
+        return 1
+
+    print(result.text or "(the agent said nothing)")
+    if result.cost:
+        print(f"\n${result.cost:.2f}")
+    if not result.ok:
+        return 1
+    folder = cfg.applications / app_id
+    made = [name for name in ("cv.pdf", "coverage.yaml", "changes.md")
+            if (folder / name).exists()]
+    missing = [name for name in ("cv.pdf", "coverage.yaml", "changes.md")
+               if name not in made]
+    print(f"\nwrote: {', '.join(made) or 'nothing'}")
+    if missing:
+        print(f"still missing: {', '.join(missing)}")
+        return 1
+    print(f"next: /apply {app_id}")
+    return 0
+
+
+def cmd_tailor(args: argparse.Namespace) -> int:
+    return _tailor(args.app)
+
+
 def cmd_submit(args: argparse.Namespace) -> int:
     """Record a submission that has already happened."""
     _load_env()
@@ -1024,9 +1083,15 @@ def main(argv: list[str] | None = None) -> int:
     ib.add_argument("--why", action="store_true", help="show the triage reason")
     ib.add_argument("--yes", "-y", action="store_true",
                     help="skip the confirmation when taking from the picker")
+    ib.add_argument("--no-tailor", action="store_true",
+                    help="just take it; write the CV later")
     ib.add_argument("--plain", action="store_true",
                     help="print the table instead of the picker")
     ib.set_defaults(func=cmd_inbox)
+
+    tl = sub.add_parser("tailor", help="have the agent write the CV for one application")
+    tl.add_argument("app", help="application id")
+    tl.set_defaults(func=cmd_tailor)
 
     sb = sub.add_parser("submit", help="record a submission that has happened")
     sb.add_argument("app", help="application id")
