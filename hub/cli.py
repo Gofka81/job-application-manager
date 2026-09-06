@@ -18,7 +18,7 @@ import yaml
 
 from hub import (answerbank, backfill, bootstrap, check as check_mod, config,
                  coverage, inbox as inbox_mod, picker, render,
-                 take as take_mod)
+                 submit as submit_mod, take as take_mod)
 
 
 def cmd_render(args: argparse.Namespace) -> int:
@@ -587,6 +587,29 @@ def cmd_menu(args: argparse.Namespace) -> int:
             return 0
 
 
+def cmd_submit(args: argparse.Namespace) -> int:
+    """Record a submission that has already happened."""
+    _load_env()
+    cfg = config.load()
+    folder = cfg.applications / args.app
+    try:
+        application = submit_mod.record(folder, cfg.logs, args.note or "")
+    except submit_mod.NotAnApplication as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    print(f"{application['app_id']} submitted at {application['submitted_at']}")
+    job_id = application.get("radar_job_id")
+    if job_id:
+        try:
+            inbox_mod.set_status(job_id, "applied")
+            print("  radar marked applied")
+        except inbox_mod.RadarError as exc:
+            print(f"  radar not updated: {exc}", file=sys.stderr)
+    print(f"  watchdog {submit_mod.ping_watchdog()}")
+    return 0
+
+
 def cmd_triage(args: argparse.Namespace) -> int:
     """Ask the radar to score vacancies it has not scored yet."""
     _load_env()
@@ -654,6 +677,52 @@ def cmd_take(args: argparse.Namespace) -> int:
                 print(f"  {h.job_id[:8]}  {h.company} · {h.title}", file=sys.stderr)
         return 1
     return _take(job.job_id, args.yes)
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
+    """Answer form questions from the bank, as JSON for an agent to read.
+
+    One call per page rather than one per field: the agent fills what is
+    known and asks the human about the rest in a single batch, because
+    interrupting per field makes the system unbearable by the third
+    application.
+    """
+    cfg = config.load()
+    path = cfg.data / "answer-bank.yaml"
+    bank = yaml.safe_load(path.read_text()) if path.exists() else []
+    questions = args.questions or [l.strip() for l in sys.stdin if l.strip()]
+
+    answered, unknown = {}, []
+    for question in questions:
+        match = answerbank.find(question, bank)
+        entry = next((e for e in bank if e["slot"] == match.slot), None) \
+            if match.certain else None
+        value = answerbank.value_of(entry, args.type) if entry else None
+        if value in (None, ""):
+            unknown.append(question)
+        else:
+            answered[question] = {"slot": entry["slot"], "value": value,
+                                  "reuse": entry.get("reuse", "always")}
+    print(json.dumps({"answered": answered, "unknown": unknown}, indent=2,
+                     ensure_ascii=False))
+    return 0
+
+
+def cmd_learn(args: argparse.Namespace) -> int:
+    """Record an answer the human just gave, so it is not asked twice."""
+    cfg = config.load()
+    path = cfg.data / "answer-bank.yaml"
+    bank = yaml.safe_load(path.read_text()) if path.exists() else []
+    try:
+        entry = answerbank.learn(bank, args.question, args.answer,
+                                 slot=args.slot, reuse=args.reuse)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    path.write_text(bootstrap.HEADER + yaml.safe_dump(
+        bank, sort_keys=False, allow_unicode=True, width=88))
+    print(f"{entry['slot']}: {entry.get('value') or entry.get('stated')}")
+    return 0
 
 
 def cmd_answers(args: argparse.Namespace) -> int:
@@ -807,6 +876,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="print the table instead of the picker")
     ib.set_defaults(func=cmd_inbox)
 
+    sb = sub.add_parser("submit", help="record a submission that has happened")
+    sb.add_argument("app", help="application id")
+    sb.add_argument("--note", help="anything worth remembering")
+    sb.set_defaults(func=cmd_submit)
+
     tr = sub.add_parser("triage", help="score vacancies the radar has not rated")
     tr.add_argument("--count", type=int, default=20)
     tr.add_argument("--limit", type=int, default=300)
@@ -817,6 +891,20 @@ def main(argv: list[str] | None = None) -> int:
     tk.add_argument("--limit", type=int, default=300)
     tk.add_argument("--yes", "-y", action="store_true")
     tk.set_defaults(func=cmd_take)
+
+    ak = sub.add_parser("ask", help="answer form questions from the bank (JSON)")
+    ak.add_argument("questions", nargs="*", help="or one per line on stdin")
+    ak.add_argument("--type", choices=("number", "integer", "text", "range"),
+                    help="shape the answer for this kind of field")
+    ak.set_defaults(func=cmd_ask)
+
+    ln = sub.add_parser("learn", help="record an answer given by the human")
+    ln.add_argument("question")
+    ln.add_argument("answer")
+    ln.add_argument("--slot", help="attach as a new wording of a known slot")
+    ln.add_argument("--reuse", default="always",
+                    choices=answerbank.REUSE)
+    ln.set_defaults(func=cmd_learn)
 
     an = sub.add_parser("answers", help="the answer bank for application forms")
     an.add_argument("--init", action="store_true", help="create from the standard set")

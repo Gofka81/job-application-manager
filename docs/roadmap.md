@@ -98,13 +98,13 @@ The main block. Until it works, nothing else has anything to stand on.
       `coverage.yaml` / `tailoring.yaml` contracts (D34)
 - [~] **B1.8** `M` Answer bank: schema, bootstrap over 30-40 standard
       questions, extraction from old CVs and LinkedIn
-- [ ] **B1.9** `M` The agent fills the form, matches slots, asks in a batch
+- [~] **B1.9** `M` The agent fills the form, matches slots, asks in a batch
       per page
-- [ ] **B1.10** `M` STOP screen: field list with values, agent-inferred ones
+- [~] **B1.10** `M` STOP screen: field list with values, agent-inferred ones
       highlighted
-- [ ] **B1.11** `S` Confirmed Submit → `application.json` plus
+- [x] **B1.11** `S` Confirmed Submit → `application.json` plus
       `status.jsonl: submitted`
-- [ ] **B1.12** `S` Answer harvest at STOP: short and enum go straight to
+- [~] **B1.12** `S` Answer harvest at STOP: short and enum go straight to
       `always`, long free text becomes `draft`
 
 **Exit (M1):** an application goes from link to record with no manual
@@ -133,7 +133,7 @@ Small, standalone, allowed to slip. But it is what insures the meta-risk:
 The hardest deterministic piece. Without it there is no funnel — only a list
 of submissions.
 
-- [ ] **B2.1** `M` Status log: writing, folding into current state, the
+- [~] **B2.1** `M` Status log: writing, folding into current state, the
       `source` vocabulary, `correction` and retraction
 - [ ] **B2.2** `M` Gmail: narrow query, read-only, candidate extraction
       (sender, subject, first N characters)

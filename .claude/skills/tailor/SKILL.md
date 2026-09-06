@@ -1,41 +1,39 @@
 ---
 name: tailor
-description: Tailor the CV to a specific vacancy in this repo. Reads the JD, records what it asks for against the master profile, writes the tailoring plan, and renders through the gates. Use when applying to a job, tailoring a CV to a job description, or preparing application materials.
+description: Tailor the CV to a vacancy already taken into this repo. Reads the application's JD, records what it asks for against the master, produces the CV, and runs it through the checks. Use after `jam take`, or when asked to tailor a CV, prepare application materials, or apply to a job in this repository.
 ---
 
 # Tailor an application
 
-You supply the judgement. The repository supplies the enforcement.
+The vacancy is already in `data/applications/<app_id>/` with `jd.md` and
+`application.json`. If it is not, start from `jam inbox`.
 
-Your output is **decisions written to files**: `coverage.yaml`,
-`tailoring.yaml`, `changes.md`. Never a PDF, and never an edit to the master. `jam` renders and
-checks; if a check fails, fix the decision, not the check.
+You supply the judgement. `jam` supplies the enforcement: a claim that is not
+in the master profile does not reach a PDF.
 
-## What you must never do
+## Never
 
-- **Never edit `data/master-profile.yaml`.** If the vacancy wants something true
-  that the master lacks, say so in `changes.md` and ask. Adding it yourself
-  turns a gap into a claim nobody verified.
-- **Never write `cv.tex` or `cv.pdf`.** `jam render` does that.
-- **Never invent.** No employer, title, date, technology or number may appear
-  that the master does not hold. The fact gate enforces this, but arriving at
-  the gate with a fabrication already means the reasoning went wrong.
-- **Never weaken a check to make it pass.** Not `factgate.allow` in
-  `config.yaml`, not the gate code. A failing gate is information.
+- **Never edit `data/master-profile.yaml`.** If the vacancy wants something
+  true that the master lacks, say so and ask. Adding it yourself turns a gap
+  nobody verified into a claim.
+- **Never invent.** No employer, title, date, technology or number that the
+  master does not hold.
+- **Never weaken a check to make it pass** — not `factgate.allow` in
+  `config.yaml`, not the code. A failing check is information, and widening
+  the allow list is the cheapest way to lose it.
 
 ## Steps
 
-### 1. Locate the application
+### 1. Read the vacancy
 
-The folder is `data/applications/<app_id>/`, where `app_id` is
-`YYYY-MM-DD--company-slug--role-slug` using the **submission** date. It should
-hold `jd.md`. If the JD is missing, ask for the full posting text and save it
-there verbatim first. A snippet is not enough to judge coverage.
+`data/applications/<app_id>/jd.md`. If it says the radar held no text, open
+the posting and paste the real thing in first — coverage judged from a snippet
+is guesswork.
 
-### 2. Read the JD and record coverage
+### 2. Record coverage
 
-Extract every requirement, separating what the posting **requires** from what
-it **prefers**. Write `coverage.yaml`:
+Every requirement, separating what the posting **requires** from what it
+**prefers**, into `coverage.yaml` beside the JD:
 
 ```yaml
 requirements:
@@ -49,80 +47,57 @@ requirements:
     evidence: []
 ```
 
-`evidence` holds ids from the master: `<entry id>.<bullet index>` (0-based),
-`skills.<key>`, `education.<id>`, `certifications.<index>`. A `covered` or
-`partial` requirement **must** cite evidence; a `missing` one must not.
+`evidence` holds master ids: `<entry id>.<bullet index>` (0-based),
+`skills.<key>`, `education.<id>`, `certifications.<index>`. Covered and
+partial must cite evidence; missing must not.
 
-Be honest about `missing`. Aggregated across applications this is the one
+Be honest about `missing`. Aggregated across applications this is the only
 analysis in the project that works at low volume, because its unit is a
-requirement rather than an application, and it answers what to learn next. A
-`partial` marked `covered` corrupts that permanently.
+requirement rather than an application — `jam gaps` is how you find out what
+to learn next. Marking a partial as covered corrupts that permanently.
 
 Check it: `jam coverage --app <app_id>`.
 
-### 3. Write the tailoring plan
+### 3. Produce the CV
 
-`tailoring.yaml` in the same folder:
+Tailor from the LaTeX master in `data/master/cv.tex`, following
+`references/tailoring-principles.md`. Edit a copy in the application folder,
+never the master, and compile it there.
 
-```yaml
-max_pages: 1
-drop: [contoso.1, fabrikam.2, kotlin, scala]
-emphasis: [databricks, pyspark, aws]
-bullets:
-  northwind.1:
-    from: [northwind.1]
-    text: "Developed proactive data quality and reconciliation controls…"
-  northwind.merged:
-    from: [northwind.0, northwind.2]
-    text: "…"
-```
+Reword to the vacancy's vocabulary where it is truthful. Framing language
+layered onto a real fact is fine; a new noun or number is not.
 
-- `drop` takes a section name, an entry id, a single bullet as
-  `<id>.<index>`, or a skill key.
-- `emphasis` reorders skills only; it cannot introduce one.
-- `bullets` are rewordings and merges. **`from` is mandatory and is what the
-  gate checks against.** An override is verified against those bullets alone,
-  never the whole master, so a metric belonging to one employer cannot appear
-  in another's. A merge lists several sources, takes the position of the
-  earliest, and the rest drop out. Sources must belong to the same entry.
-
-Reword to use the vacancy's vocabulary where it is truthful. Framing language
-layered onto a real fact is fine. "Ensuring reliable delivery" on top of real
-data-quality work is what anyone writing their own CV does. A new noun or
-number is not.
-
-For a skill the market spells several ways, prefer declaring `aliases` in the
-master over rewording per application. The renderer then prints whichever
-form the JD uses, for every future application at once. Ask before adding
-them; that is a master edit.
-
-### 4. Render
+### 4. Check it
 
 ```
-jam render --app <app_id>
+jam check data/applications/<app_id>/cv.pdf --max-pages 1
 ```
 
-It resolves aliases against `jd.md`, applies the plan, and runs three checks
-before the PDF exists.
-
-| exit | meaning | what to do |
+| it says | what happened | what to do |
 |---|---|---|
-| 0 | done | review the PDF |
-| 1 | malformed input | usually an override missing `from`, or evidence naming an id that is not in the master |
-| 2 | over the page budget | cut content via `drop`; do not shrink margins, the design is fixed |
-| 3 | fact gate | a claim is not in its source. Remove it, or ask whether it is true and belongs in the master |
-| 4 | extraction | a term did not survive `pdftotext`, so a recruiter's keyword search would not find it |
+| not in the master | a claim has no source | remove it, or ask whether it is true and belongs in the master |
+| numbers not in the master | a figure was changed or invented | put the master's figure back |
+| ligature glyphs | a term will not survive a recruiter's search | fix the font or the wording |
+| no text extracted | the PDF is not selectable | rebuild it |
+| pages, budget is 1 | too long | cut content, never margins |
+
+Findings are questions, not verdicts. The answer is usually either "true, so
+it belongs in the master" or "not true, so it comes out of the CV".
 
 ### 5. Write `changes.md`
 
-For the human, not for the machine:
+For the human:
 
 - **Requirement → coverage**, mirroring `coverage.yaml` in prose.
-- **Changes made**, honestly: what was dropped, reordered, merged, reworded.
-- **Honest gaps**: what the vacancy wants that the master genuinely lacks.
+- **Changes made** — what was dropped, reordered, merged, reworded.
+- **Honest gaps** — what the vacancy wants that the master genuinely lacks.
   Never soften this. It is the most useful thing in the file.
-- **Judgement**: anything the numbers do not show. A posting that reads as a
+- **Judgement** — anything the numbers do not show: a posting that reads as a
   different role than its title, an unusual emphasis.
+
+## Then
+
+`/apply <app_id>` fills the form. You do not submit; the human does.
 
 ## Rules
 

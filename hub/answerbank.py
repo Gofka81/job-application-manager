@@ -108,21 +108,36 @@ def value_of(entry: dict, field_type: str | None = None,
 def learn(bank: list[dict], question: str, answer: str, slot: str | None = None,
           reuse: str = "always", field_type: str = "text",
           today: date | None = None) -> dict:
-    """Record an answer, or attach a new wording to a slot already known."""
+    """Record an answer.
+
+    The question is usually already in the bank with nothing filled in — the
+    standard set is created empty — so this fills that entry rather than
+    adding a second one. A question the bank has never seen becomes a new
+    slot, and a new wording of a known slot becomes an alias.
+    """
     if reuse not in REUSE:
         raise ValueError(f"reuse must be one of {REUSE}")
-    existing = find(question, bank)
-    if existing.certain:
-        return next(e for e in bank if e["slot"] == existing.slot)
 
-    if slot:
-        for entry in bank:
-            if entry["slot"] == slot:
-                entry.setdefault("aliases", []).append(question)
-                return entry
+    match = find(question, bank)
+    entry = next((e for e in bank if e["slot"] == match.slot), None) \
+        if match.certain else None
 
-    entry = {"slot": slot or normalise(question).replace(" ", "_")[:40],
-             "question": question, "type": field_type, "reuse": reuse}
+    if entry is None and slot:
+        entry = next((e for e in bank if e["slot"] == slot), None)
+        if entry is not None:
+            entry.setdefault("aliases", []).append(question)
+
+    if entry is None:
+        entry = {"slot": slot or normalise(question).replace(" ", "_")[:40],
+                 "question": question, "type": field_type, "reuse": reuse}
+        bank.append(entry)
+
+    _apply(entry, answer, today)
+    return entry
+
+
+def _apply(entry: dict, answer: str, today: date | None) -> None:
+    """A tenure is stored as the date it started, so it stays true next year."""
     years = re.match(r"^\s*(\d+(?:\.\d+)?)\s*\+?\s*(?:years?|yrs?)\b",
                      str(answer), re.I)
     if years:
@@ -131,10 +146,10 @@ def learn(bank: list[dict], question: str, answer: str, slot: str | None = None,
         entry["since"] = since_from_years(float(years.group(1)), today)
         entry["granularity"] = 0.5
         entry["type"] = "number"
+        entry.pop("value", None)
     else:
         entry["value"] = answer
-    bank.append(entry)
-    return entry
+        entry.pop("since", None)
 
 
 def unanswered(questions: list[str], bank: list[dict]) -> list[str]:

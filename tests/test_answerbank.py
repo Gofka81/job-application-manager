@@ -107,6 +107,25 @@ class TestLearning:
         ab.learn(bank, "SQL (years)", "6 years")
         assert len(bank) == 1
 
+    def test_it_fills_an_entry_that_was_waiting_empty(self):
+        """The standard set is created with every answer blank, so learning is
+        almost always filling one in rather than adding a slot."""
+        bank = [{"slot": "notice_period", "question": "What is your notice period?",
+                 "type": "text", "reuse": "always", "value": None}]
+        ab.learn(bank, "What is your notice period?", "1 month")
+        assert len(bank) == 1 and bank[0]["value"] == "1 month"
+
+    def test_filling_an_empty_entry_with_a_tenure_stores_a_date(self):
+        bank = [{"slot": "python_years", "question": "Years of Python",
+                 "type": "number", "reuse": "always", "value": None}]
+        ab.learn(bank, "Years of Python", "6 years", today=TODAY)
+        assert bank[0]["since"] == "2020-09" and bank[0].get("value") is None
+
+    def test_replacing_a_tenure_with_a_plain_answer_drops_the_date(self):
+        bank = [dict(BANK[0])]
+        ab.learn(bank, "Years of experience with SQL", "not applicable")
+        assert bank[0]["value"] == "not applicable" and "since" not in bank[0]
+
     def test_an_unknown_reuse_scope_is_rejected(self):
         with pytest.raises(ValueError):
             ab.learn([], "Q", "A", reuse="sometimes")
