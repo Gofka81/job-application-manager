@@ -33,10 +33,38 @@ class Column:
     width: int
     value: Callable[[object], str]
     right: bool = False
+    #: Give this column whatever width is left over. At most one per set.
+    flex: bool = False
 
-    def render(self, row: object) -> str:
-        text = str(self.value(row))[: self.width]
-        return text.rjust(self.width) if self.right else text.ljust(self.width)
+    def render(self, row: object, width: int | None = None) -> str:
+        width = self.width if width is None else width
+        text = str(self.value(row))[:width]
+        return text.rjust(width) if self.right else text.ljust(width)
+
+
+def fit(columns: Sequence[Column], available: int) -> list[tuple[Column, int]]:
+    """Which columns fit, and how wide each gets.
+
+    A terminal is often 80 columns and a column set written for 120 wrapped,
+    with rows running into each other. Columns are laid out left to right
+    while there is room; the first to overflow is dropped along with the rest,
+    because a half-drawn column reads as corruption.
+    """
+    out, used = [], 0
+    for column in columns:
+        need = column.width + (1 if out else 0)
+        if used + need > available:
+            break
+        out.append((column, column.width))
+        used += need
+
+    if out and (spare := available - used) > 0:
+        flexible = next((i for i, (c, _) in enumerate(out) if c.flex), None)
+        if flexible is None:
+            flexible = max(range(len(out)), key=lambda i: out[i][1])
+        column, width = out[flexible]
+        out[flexible] = (column, width + spare)
+    return out
 
 
 class Picker:
@@ -129,6 +157,7 @@ class Picker:
         self.cursor = max(0, min(self.cursor, len(rows) - 1)) if rows else 0
         self.top = max(min(self.top, self.cursor), self.cursor - body + 1, 0)
 
+        layout = fit(self.columns, width - 3)
         head = f"{self.title}   {len(rows)} of {len(self.all)}"
         if self.modes:
             head += f"   [{self.mode_label}]"
@@ -136,11 +165,11 @@ class Picker:
             head += f"   /{self.query}"
         screen.addnstr(0, 0, head, width - 1, curses.color_pair(2) | curses.A_BOLD)
 
-        header = "  " + " ".join(c.header.ljust(c.width)[:c.width] for c in self.columns)
+        header = "  " + " ".join(c.header.ljust(w)[:w] for c, w in layout)
         screen.addnstr(1, 0, header, width - 1, curses.A_DIM)
 
         for i, row in enumerate(rows[self.top:self.top + body]):
-            line = "  " + " ".join(c.render(row) for c in self.columns)
+            line = "  " + " ".join(c.render(row, w) for c, w in layout)
             selected = self.top + i == self.cursor
             screen.addnstr(2 + i, 0, line.ljust(width - 1)[: width - 1],
                            width - 1,
@@ -219,3 +248,16 @@ def _wrap(text: str, width: int, lines: int) -> list[str]:
     if current and len(out) < lines:
         out.append(current)
     return out
+
+
+def view(lines: Sequence[str], title: str = "") -> None:
+    """A read-only screen for a report.
+
+    Reports used to be printed and followed by an "press enter" prompt, which
+    left the previous screen's output on the terminal and made every action
+    exit differently from the inbox. One rule everywhere instead: esc goes
+    back, and nothing else is needed to leave.
+    """
+    rows = list(lines) or ["nothing to show"]
+    Picker(rows, [Column("", 200, lambda line: line)], title=title,
+           search=lambda line: line).run()

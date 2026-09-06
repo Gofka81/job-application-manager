@@ -8,8 +8,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import yaml
@@ -282,33 +284,216 @@ def _menu_actions(cfg) -> list[Action]:
                f"{len(applications)} in data/applications",
                lambda: _list_applications(cfg)),
         Action("gaps", "gaps", "what the market wants that you lack",
-               lambda: main(["gaps", "--terms", "--min-count", "3"])),
+               lambda: _gaps_screen(cfg)),
         Action("answers", "answer bank",
                f"{answered}/{total} filled" if total else "not created yet",
-               lambda: main(["answers", "--missing"])),
+               lambda: _answers_screen(cfg)),
         Action("config", "config", "where everything points",
-               lambda: main(["config"])),
+               lambda: picker.view(_config_lines(cfg), title="config")),
         Action("quit", "quit", "", lambda: None),
     ]
 
 
-def _list_applications(cfg) -> int:
-    rows = sorted(cfg.applications.glob("*/application.json"))
-    if not rows:
-        print("no applications yet — start from the inbox")
-        return 0
-    print(f"{len(rows)} application(s)\n")
-    for path in rows:
+def _applications(cfg) -> list[dict]:
+    out = []
+    for path in sorted(cfg.applications.glob("*/application.json"), reverse=True):
         try:
             record = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
-        submitted = record.get("submitted_at") or "not submitted"
-        print(f"  {record.get('app_id')}")
-        print(f"    {record.get('company')} · {record.get('title')}")
-        print(f"    {record.get('channel')} · fit {record.get('radar_score')} "
-              f"· {submitted}")
-    return 0
+        record["_folder"] = path.parent
+        out.append(record)
+    return out
+
+
+def _application_detail(record: dict) -> list[str]:
+    folder = record["_folder"]
+    files = sorted(p.name for p in folder.iterdir() if p.is_file())
+    lines = [
+        f"{record.get('company')} · {record.get('title')}",
+        "",
+        f"  id         {record.get('app_id')}",
+        f"  found via  {record.get('discovery')} · fit {record.get('radar_score')}",
+        f"  channel    {record.get('channel')}",
+        f"  submitted  {record.get('submitted_at') or 'not yet'}",
+        f"  posting    {record.get('source_url')}",
+        "",
+        f"  files      {', '.join(files)}",
+    ]
+    missing = [name for name in ("cv.pdf", "coverage.yaml")
+               if not (folder / name).exists()]
+    if missing:
+        lines += ["", f"  still needed: {', '.join(missing)}"]
+    jd = folder / "jd.md"
+    if jd.exists():
+        text = " ".join(jd.read_text().split())
+        lines += ["", "  JD"] + [f"    {chunk}" for chunk in _chunks(text, 96)][:14]
+    return lines
+
+
+def _chunks(text: str, width: int) -> list[str]:
+    out, line = [], ""
+    for word in text.split():
+        if len(line) + len(word) + 1 > width:
+            out.append(line)
+            line = word
+        else:
+            line = f"{line} {word}".strip()
+    if line:
+        out.append(line)
+    return out
+
+
+def _list_applications(cfg) -> int:
+    records = _applications(cfg)
+    if not records:
+        picker.view(["Nothing here yet.", "",
+                     "Take a vacancy from the inbox and it appears."],
+                    title="applications")
+        return 0
+    columns = [
+        picker.Column("date", 10, lambda r: str(r.get("app_id", ""))[:10]),
+        picker.Column("company", 22, lambda r: r.get("company") or ""),
+        picker.Column("title", 32, lambda r: r.get("title") or "", flex=True),
+        picker.Column("fit", 4, lambda r: str(r.get("radar_score") or "-"), right=True),
+        picker.Column("state", 14,
+                      lambda r: "submitted" if r.get("submitted_at") else "draft"),
+    ]
+    while True:
+        chosen = picker.Picker(
+            records, columns, title="applications",
+            search=lambda r: f"{r.get('company')} {r.get('title')}",
+        ).run()
+        if chosen is None:
+            return 0
+        picker.view(_application_detail(chosen), title=chosen.get("app_id", ""))
+
+
+def _answers_screen(cfg) -> int:
+    """Browse the bank and fill an answer without opening the YAML.
+
+    Twenty-five of the thirty-seven are things only the person knows, and
+    editing them in a file is the reason they stay empty.
+    """
+    path = cfg.data / "answer-bank.yaml"
+    if not path.exists():
+        picker.view(["No answer bank yet.", "",
+                     "Run `jam answers --init` to create it from the standard",
+                     "set of questions forms ask."], title="answer bank")
+        return 0
+
+    def state(entry):
+        if entry.get("since"):
+            return f"{answerbank.years_since(entry['since']):g} years"
+        value = entry.get("value")
+        return "—" if value is None else str(value)
+
+    columns = [
+        picker.Column("", 1, lambda e: " " if (e.get("value") is None
+                                               and not e.get("since")) else "✓"),
+        picker.Column("question", 44, lambda e: e.get("question") or e["slot"],
+                      flex=True),
+        picker.Column("answer", 22, state),
+        picker.Column("reuse", 13, lambda e: e.get("reuse", "")),
+    ]
+    while True:
+        bank = yaml.safe_load(path.read_text()) or []
+        answered = sum(1 for e in bank
+                       if e.get("value") is not None or e.get("since"))
+        chosen = picker.Picker(
+            bank, columns, title=f"answer bank   {answered}/{len(bank)} filled",
+            search=lambda e: f"{e.get('question', '')} {e['slot']}",
+            detail=lambda e: _answer_hint(e),
+        ).run()
+        if chosen is None:
+            return 0
+        _fill_answer(path, bank, chosen)
+
+
+def _answer_hint(entry: dict) -> str:
+    hints = {
+        "always": "reused on every application",
+        "per_archetype": "may differ by the kind of role",
+        "never": "written fresh each time — never reused",
+    }
+    note = hints.get(entry.get("reuse", ""), "")
+    if entry.get("since"):
+        note += f"   stored as a date ({entry['since']}), so it stays true"
+    return note
+
+
+def _fill_answer(path, bank: list, entry: dict) -> None:
+    print(f"\n{entry.get('question') or entry['slot']}")
+    if entry.get("value") is not None:
+        print(f"currently: {entry['value']}")
+    if entry.get("type") == "number":
+        print('a tenure answer like "6 years" is stored as a date, so it stays true')
+    try:
+        answer = input("> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if not answer:
+        return
+
+    years = re.match(r"^\s*(\d+(?:\.\d+)?)\s*\+?\s*(?:years?|yrs?)\b",
+                     answer, re.I)
+    if years:
+        entry["since"] = answerbank.since_from_years(float(years.group(1)))
+        entry["stated"] = answer
+        entry["stated_at"] = str(date.today())
+        entry["granularity"] = 0.5
+        entry.pop("value", None)
+    else:
+        entry["value"] = answer
+    path.write_text(bootstrap.HEADER + yaml.safe_dump(
+        bank, sort_keys=False, allow_unicode=True, width=88))
+
+
+def _gaps_screen(cfg) -> int:
+    """What the market asked for that the master does not hold.
+
+    A bare word count answers "so what". Choosing a term shows the vacancies
+    that wanted it, in their own words, which is what makes it actionable
+    rather than trivia.
+    """
+    counts = coverage.terms(cfg.applications, min_count=1)
+    if not counts:
+        picker.view(["No coverage recorded yet.", "",
+                     "Each application records what the vacancy asked for and",
+                     "what the master could answer. Aggregated, that says what",
+                     "to learn next — and it needs no outcomes, so it works",
+                     "from the first application."], title="gaps")
+        return 0
+
+    rows = [{"term": term, "n": n} for term, n in counts.most_common()]
+    total = len({f.parent for f in cfg.applications.glob("*/coverage.yaml")})
+    columns = [picker.Column("asked by", 8, lambda r: f"{r['n']} of {total}",
+                             right=True),
+               picker.Column("missing", 40, lambda r: r["term"], flex=True)]
+    while True:
+        chosen = picker.Picker(
+            rows, columns,
+            title=f"gaps across {total} applications",
+            search=lambda r: r["term"],
+            detail=lambda r: f"{r['n']} of {total} vacancies asked for this and "
+                             f"the master could not answer",
+        ).run()
+        if chosen is None:
+            return 0
+        picker.view(_gap_detail(cfg, chosen["term"]), title=chosen["term"])
+
+
+def _gap_detail(cfg, term: str) -> list[str]:
+    lines = []
+    for f in sorted(cfg.applications.glob("*/coverage.yaml")):
+        doc = coverage.load(f)
+        wanted = [r["text"] for r in doc.get("requirements") or []
+                  if r.get("status") == "missing" and term in str(r["text"]).lower()]
+        if wanted:
+            lines.append(f.parent.name)
+            lines += [f"    {w}" for w in wanted]
+            lines.append("")
+    return lines or [f"nothing recorded for {term}"]
 
 
 def cmd_menu(args: argparse.Namespace) -> int:
@@ -328,12 +513,9 @@ def cmd_menu(args: argparse.Namespace) -> int:
         ).run()
         if chosen is None or chosen.key == "quit":
             return 0
-        print()
-        chosen.run()
         try:
-            input("\n[enter] back to the menu, [ctrl-c] to leave ")
-        except (EOFError, KeyboardInterrupt):
-            print()
+            chosen.run()
+        except KeyboardInterrupt:
             return 0
 
 
@@ -440,6 +622,25 @@ def cmd_gaps(args: argparse.Namespace) -> int:
             print(f"  {n:3}x  {text}")
         print()
     return 0
+
+
+def _config_lines(cfg) -> list[str]:
+    bank = cfg.data / "answer-bank.yaml"
+    return [
+        f"data          {cfg.data}",
+        f"applications  {cfg.applications}",
+        f"templates     {cfg.templates}",
+        "",
+        f"master        {'present' if cfg.master_profile.exists() else 'MISSING'}",
+        f"answer bank   {'present' if bank.exists() else 'not created'}",
+        "",
+        f"stale after   {cfg.thresholds.stale_days} days",
+        f"ghosted after {cfg.thresholds.ghosted_days} days",
+        f"follow-ups    at most {cfg.followup.max_touches_per_company} per company, "
+        f"{cfg.followup.min_days_between} days apart",
+        "",
+        f"radar         {os.environ.get('JOB_RADAR_API_URL') or 'not configured'}",
+    ]
 
 
 def cmd_config(args: argparse.Namespace) -> int:

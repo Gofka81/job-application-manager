@@ -242,3 +242,40 @@ class TestModes:
 
     def test_no_modes_means_no_filtering_by_mode(self):
         assert len(make().rows) == 3
+
+
+class TestFit:
+    """A terminal is often 80 columns and a set written for 120 wrapped, with
+    rows running into each other."""
+
+    COLS = [picker.Column("a", 10, str),
+            picker.Column("b", 30, str, flex=True),
+            picker.Column("c", 20, str)]
+
+    def widths(self, available):
+        return [w for _, w in picker.fit(self.COLS, available)]
+
+    def test_everything_fits_and_the_flex_column_absorbs_the_slack(self):
+        assert self.widths(120) == [10, 88, 20]
+
+    def test_the_line_never_exceeds_the_space(self):
+        for available in (20, 45, 80, 120, 200):
+            got = picker.fit(self.COLS, available)
+            assert sum(w for _, w in got) + max(0, len(got) - 1) <= available
+
+    def test_columns_that_do_not_fit_are_dropped_from_the_right(self):
+        """A half-drawn column reads as corruption."""
+        assert len(self.widths(45)) == 2
+
+    def test_without_a_flex_column_the_widest_takes_the_slack(self):
+        cols = [picker.Column("a", 10, str), picker.Column("b", 20, str)]
+        assert picker.fit(cols, 60)[1][1] == 49
+
+    def test_a_single_column_still_renders(self):
+        assert len(self.widths(20)) == 1
+
+    def test_nothing_fits_at_all(self):
+        assert picker.fit(self.COLS, 3) == []
+
+    def test_a_value_is_cut_to_the_width_it_was_given(self):
+        assert picker.Column("x", 30, lambda r: "y" * 50).render(None, 8) == "y" * 8
