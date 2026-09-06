@@ -758,7 +758,7 @@ def cmd_menu(args: argparse.Namespace) -> int:
             return 0
 
 
-def _tailor(app_id: str) -> int:
+def _tailor(app_id: str, model: str | None = None) -> int:
     """Hand the tailoring to the agent and show what it did."""
     cfg = config.load()
     if not (cfg.applications / app_id).is_dir():
@@ -766,7 +766,7 @@ def _tailor(app_id: str) -> int:
         return 1
     print(f"tailoring {app_id} — this takes a minute\n")
     try:
-        result = agent.tailor(app_id, config.ROOT)
+        result = agent.tailor(app_id, config.ROOT, model or cfg.agent_model)
     except agent.AgentMissing as exc:
         print(exc, file=sys.stderr)
         print(f"\nrun it yourself with:  /tailor {app_id}", file=sys.stderr)
@@ -795,7 +795,7 @@ def _tailor(app_id: str) -> int:
 
 
 def cmd_tailor(args: argparse.Namespace) -> int:
-    return _tailor(args.app)
+    return _tailor(args.app, args.model)
 
 
 def cmd_submit(args: argparse.Namespace) -> int:
@@ -1091,6 +1091,7 @@ def main(argv: list[str] | None = None) -> int:
 
     tl = sub.add_parser("tailor", help="have the agent write the CV for one application")
     tl.add_argument("app", help="application id")
+    tl.add_argument("--model", help="override the model for this run")
     tl.set_defaults(func=cmd_tailor)
 
     sb = sub.add_parser("submit", help="record a submission that has happened")

@@ -42,3 +42,15 @@ followup:
 # the fact in master-profile.yaml instead.
 factgate:
   allow: []
+
+# Which model writes the CV. Left unset so the CLI's own default applies,
+# which is Opus. That is what the one measured run used, and it produced a CV
+# that passed both gates with an honest gaps section — a cheaper model might
+# do as well, but nobody has checked, and quietly downgrading the thing that
+# decides what may be claimed is not a change to make on a hunch.
+#
+# `jam tailor` prints what the run cost. On a subscription that figure is an
+# equivalent counted against usage limits rather than money charged; with an
+# ANTHROPIC_API_KEY it is money. Override per run with `--model sonnet`.
+agent:
+  model:

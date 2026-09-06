@@ -45,6 +45,7 @@ class Config:
     detector: Detector
     followup: Followup
     factgate_allow: tuple[str, ...]
+    agent_model: str | None
 
     @property
     def master_profile(self) -> Path:
@@ -84,6 +85,7 @@ def load(path: Path | None = None) -> Config:
         detector=Detector(**raw["detector"]),
         followup=Followup(**raw["followup"]),
         factgate_allow=tuple(raw.get("factgate", {}).get("allow", [])),
+        agent_model=(raw.get("agent") or {}).get("model"),
         applications_override=(_resolve(paths["applications"])
                                if paths.get("applications") else None),
     )

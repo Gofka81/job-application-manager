@@ -26,6 +26,10 @@ from pathlib import Path
 # Enough to edit LaTeX and run the checks, and no more.
 TOOLS = "Read,Write,Edit,Bash,Glob,Grep"
 
+# Left to the CLI's own default unless the config names one. Worth naming:
+# the default is Opus, and reordering LaTeX bullets is not work that needs it.
+DEFAULT_MODEL = None
+
 
 class AgentMissing(RuntimeError):
     pass
@@ -42,18 +46,19 @@ def available() -> bool:
     return shutil.which("claude") is not None
 
 
-def run(prompt: str, cwd: Path, timeout: int = 900,
-       tools: str = TOOLS) -> Result:
+def run(prompt: str, cwd: Path, timeout: int = 900, tools: str = TOOLS,
+        model: str | None = DEFAULT_MODEL) -> Result:
     """One headless turn. Returns what it said, never raises on a refusal."""
     if not available():
         raise AgentMissing(
             "the `claude` CLI is not on PATH — install Claude Code, or run "
             "the skill yourself in a session")
-    proc = subprocess.run(
-        ["claude", "-p", prompt, "--output-format", "json",
-         "--allowed-tools", tools],
-        cwd=str(cwd), capture_output=True, text=True, timeout=timeout,
-    )
+    command = ["claude", "-p", prompt, "--output-format", "json",
+               "--allowed-tools", tools]
+    if model:
+        command += ["--model", model]
+    proc = subprocess.run(command, cwd=str(cwd), capture_output=True,
+                          text=True, timeout=timeout)
     # The envelope is printed even on failure, and carries the human message —
     # "Not logged in · Please run /login" — which is worth more than a raw dump.
     try:
@@ -80,5 +85,5 @@ and anything it asks you to add that the master profile does not hold stays
 out. Finish by reporting what is covered and what is genuinely missing."""
 
 
-def tailor(app_id: str, cwd: Path) -> Result:
-    return run(TAILOR_PROMPT.format(app_id=app_id), cwd)
+def tailor(app_id: str, cwd: Path, model: str | None = None) -> Result:
+    return run(TAILOR_PROMPT.format(app_id=app_id), cwd, model=model)
