@@ -505,24 +505,43 @@ def _applications(cfg) -> list[dict]:
     return out
 
 
+def _stage(record: dict) -> tuple[str, str]:
+    """Where an application stands, and what moves it on.
+
+    Worked out from the folder rather than stored: a stage field would be a
+    second truth to keep in step with the files that actually exist.
+
+    `jam` cannot run the next step itself — the deterministic half is not
+    allowed to call a model (D21) — so it names it and you run it.
+    """
+    folder = record["_folder"]
+    if record.get("submitted_at"):
+        return "submitted", ""
+    if not (folder / "cv.pdf").exists():
+        return "no cv", f"/tailor {record.get('app_id')}"
+    if not (folder / "coverage.yaml").exists():
+        return "no coverage", f"/tailor {record.get('app_id')}"
+    return "ready", f"/apply {record.get('app_id')}"
+
+
 def _application_detail(record: dict) -> list[str]:
     folder = record["_folder"]
     files = sorted(p.name for p in folder.iterdir() if p.is_file())
+    stage, action = _stage(record)
+    score = record.get("radar_score")
     lines = [
         f"{record.get('company')} · {record.get('title')}",
         "",
         f"  id         {record.get('app_id')}",
-        f"  found via  {record.get('discovery')} · fit {record.get('radar_score')}",
+        f"  found via  {record.get('discovery')} · fit {score if score is not None else '-'}",
         f"  channel    {record.get('channel')}",
         f"  submitted  {record.get('submitted_at') or 'not yet'}",
         f"  posting    {record.get('source_url')}",
         "",
         f"  files      {', '.join(files)}",
     ]
-    missing = [name for name in ("cv.pdf", "coverage.yaml")
-               if not (folder / name).exists()]
-    if missing:
-        lines += ["", f"  still needed: {', '.join(missing)}"]
+    if action:
+        lines += ["", f"  next       {action}"]
     jd = folder / "jd.md"
     if jd.exists():
         text = " ".join(jd.read_text().split())
@@ -555,8 +574,8 @@ def _list_applications(cfg) -> int:
         picker.Column("company", 22, lambda r: r.get("company") or ""),
         picker.Column("title", 32, lambda r: r.get("title") or "", flex=True),
         picker.Column("fit", 4, lambda r: str(r.get("radar_score") or "-"), right=True),
-        picker.Column("state", 14,
-                      lambda r: "submitted" if r.get("submitted_at") else "draft"),
+        picker.Column("stage", 12, lambda r: _stage(r)[0]),
+        picker.Column("next", 30, lambda r: _stage(r)[1]),
     ]
     while True:
         chosen = picker.Picker(

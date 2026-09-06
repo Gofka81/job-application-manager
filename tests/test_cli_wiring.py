@@ -167,3 +167,41 @@ class TestEveryMenuPathOpens:
                           lambda self: shown.extend(self.all) or None):
             cli._gaps_screen(empty)
         assert any("to learn next" in line for line in shown)
+
+
+class TestStage:
+    """Worked out from the folder rather than stored: a stage field would be a
+    second truth to keep in step with the files that actually exist."""
+
+    def record(self, tmp_path, submitted=None, files=()):
+        folder = tmp_path / "2026-09-06--northwind--data-engineer"
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in files:
+            (folder / name).write_text("x")
+        return {"app_id": folder.name, "_folder": folder,
+                "submitted_at": submitted}
+
+    def test_nothing_built_yet_points_at_tailoring(self, tmp_path):
+        stage, action = cli._stage(self.record(tmp_path))
+        assert stage == "no cv" and action.startswith("/tailor")
+
+    def test_a_cv_without_coverage_is_still_tailoring(self, tmp_path):
+        """The gaps record is the half that survives the application."""
+        stage, action = cli._stage(self.record(tmp_path, files=["cv.pdf"]))
+        assert stage == "no coverage" and action.startswith("/tailor")
+
+    def test_both_present_means_it_is_ready_to_fill(self, tmp_path):
+        stage, action = cli._stage(
+            self.record(tmp_path, files=["cv.pdf", "coverage.yaml"]))
+        assert stage == "ready" and action.startswith("/apply")
+
+    def test_a_submitted_application_needs_nothing(self, tmp_path):
+        stage, action = cli._stage(self.record(
+            tmp_path, submitted="2026-09-06T10:00:00+00:00",
+            files=["cv.pdf", "coverage.yaml"]))
+        assert stage == "submitted" and action == ""
+
+    def test_submitted_wins_over_a_missing_file(self, tmp_path):
+        """It already went out; what is on disk cannot un-send it."""
+        stage, _ = cli._stage(self.record(tmp_path, submitted="2026-09-06"))
+        assert stage == "submitted"
