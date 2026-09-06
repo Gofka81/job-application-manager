@@ -18,7 +18,7 @@ import yaml
 
 from hub import (answerbank, backfill, bootstrap, check as check_mod, config,
                  coverage, inbox as inbox_mod, picker, render,
-                 submit as submit_mod, take as take_mod)
+                 openurl, submit as submit_mod, take as take_mod)
 
 
 def cmd_render(args: argparse.Namespace) -> int:
@@ -193,9 +193,32 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
         found = inbox_mod.fetch(limit=limit, query=query)
         return inbox_mod.shortlist(found, min_score, statuses, max_age)
 
+    def score_unrated(p) -> str:
+        pending = [j.job_id for j in p.rows if j.score is None][:20]
+        if not pending:
+            return "everything shown already has a score"
+        try:
+            inbox_mod.triage(pending)
+        except inbox_mod.RadarError as exc:
+            return str(exc)
+        return (f"queued {len(pending)} for scoring — the radar triages "
+                f"overnight, this jumps the queue")
+
+    def refresh(p) -> str:
+        try:
+            found = inbox_mod.fetch(limit=limit)
+        except inbox_mod.RadarError as exc:
+            return str(exc)
+        p.base = inbox_mod.shortlist(found, min_score, statuses, max_age)
+        p.all = list(p.base)
+        p.deep_query = ""
+        return f"refreshed — {len(p.all)} vacancies"
+
     return picker.Picker(
         jobs, columns, title="job-radar inbox",
         deep=deep, deep_label="in JD",
+        keys={20: ("^t score unrated", score_unrated),
+              18: ("^r refresh", refresh)},
         search=lambda j: f"{j.company} {j.title} {j.location} {j.source}",
         # Freshness first, because a week-old posting is usually already
         # answered. Reachable without leaving the screen: the flag version
@@ -210,7 +233,7 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
 
 
 def _vacancy_screen(job_id: str, on_taken=None) -> None:
-    """The whole posting, and what can be done about it, on one screen."""
+    """The whole posting, laid out to be read rather than parsed."""
     try:
         job = inbox_mod.detail(job_id)
     except inbox_mod.RadarError as exc:
@@ -219,21 +242,52 @@ def _vacancy_screen(job_id: str, on_taken=None) -> None:
 
     cfg = config.load()
     company, title = job.get("company") or "", job.get("title") or ""
-    header = f"{company} · {title}"
-    bits = [f"fit {job.get('score') or '-'}", job.get("source") or "",
-            job.get("location") or "", job.get("status") or ""]
-    subtitle = " · ".join(b for b in bits if b)
+    url = job.get("url") or ""
 
-    lines = [job.get("url") or "", ""]
-    if job.get("eval_reason"):
-        lines += [f"triage: {job['eval_reason']}", ""]
+    def field(label, value):
+        return f"  {label:<11} {value}" if value else None
+
+    salary = ""
+    lo, hi, cur = job.get("salary_min"), job.get("salary_max"), job.get("currency") or ""
+    if lo or hi:
+        salary = (f"{cur}{int((lo or 0)/1000)}k–{cur}{int(hi/1000)}k" if lo and hi
+                  else f"{cur}{int((lo or hi)/1000)}k")
+
+    age = ""
+    posted = job.get("posted_at") or job.get("first_seen")
+    if posted:
+        try:
+            days = (date.today() - date.fromisoformat(str(posted)[:10])).days
+            age = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''} ago"
+        except ValueError:
+            age = str(posted)[:10]
+
     seen = take_mod.already_applied(cfg.applications, company, title)
+
+    lines = [line for line in [
+        field("fit", f"{job.get('score')}/10" if job.get("score") is not None
+              else "not scored yet — press s"),
+        field("posted", age),
+        field("where", job.get("location")),
+        field("pay", salary),
+        field("source", job.get("source")),
+        field("link", url),
+    ] if line]
+
+    if job.get("eval_reason"):
+        lines += ["", "  why the radar rated it"]
+        lines += [f"    {chunk}" for chunk in _chunks(job["eval_reason"], 88)]
     if seen:
-        lines += [f"already applied: {', '.join(seen)}", ""]
+        lines += ["", f"  ALREADY APPLIED: {', '.join(seen)}"]
+
     body = (job.get("description") or "").strip()
-    lines += body.splitlines() if body else [
-        "The radar holds no text for this posting.",
-        "Taking it writes a jd.md to paste the posting into."]
+    lines += ["", "  " + "─" * 60, ""]
+    if body:
+        for paragraph in re.split(r"\n\s*\n", body):
+            lines += _chunks(" ".join(paragraph.split()), 92) + [""]
+    else:
+        lines += ["The radar holds no text for this posting.",
+                  "Applying writes a jd.md to paste it into."]
 
     def apply_now() -> str:
         folder, _ = take_mod.create(cfg.applications, job)
@@ -250,13 +304,14 @@ def _vacancy_screen(job_id: str, on_taken=None) -> None:
             inbox_mod.triage([job_id])
         except inbox_mod.RadarError as exc:
             return str(exc)
-        return "queued for triage — the score appears once the radar runs it"
+        return "queued for scoring"
 
     actions = [picker.Act("a", "apply", apply_now,
-                          confirm="create the application?")]
+                          confirm="create the application?"),
+               picker.Act("o", "open", lambda: openurl.open_url(url))]
     if job.get("score") is None:
         actions.append(picker.Act("s", "score it", score_now))
-    picker.Detail(header, lines, actions, subtitle=subtitle).run()
+    picker.Detail(f"{company} · {title}", lines, actions).run()
 
 
 def _resolve(query: str, jobs: list):
@@ -347,8 +402,6 @@ def _menu_actions(cfg) -> list[Action]:
         Action("apps", "applications",
                f"{len(applications)} in data/applications",
                lambda: _list_applications(cfg)),
-        Action("triage", "triage", "score vacancies the radar has not rated",
-               lambda: _triage_screen(cfg)),
         Action("gaps", "gaps", "what the market wants that you lack",
                lambda: _gaps_screen(cfg)),
         Action("answers", "answer bank",

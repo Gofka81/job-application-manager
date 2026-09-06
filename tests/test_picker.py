@@ -424,3 +424,39 @@ class TestFold:
 
     def test_a_short_line_is_left_alone(self):
         assert picker._fold("short", 40) == ["short"]
+
+
+class TestExtraKeys:
+    """Actions bound to control characters. Letters cannot be used: they
+    belong to the filter, and taking one back would hide any row whose text
+    contains it."""
+
+    def make(self, calls):
+        return picker.Picker(
+            ROWS, COLUMNS, search=lambda r: r.company,
+            keys={20: ("^t score", lambda p: calls.append("t") or "queued 3"),
+                  18: ("^r refresh", lambda p: calls.append("r") or "")})
+
+    def test_a_bound_key_runs_and_shows_what_it_did(self):
+        calls = []
+        p = self.make(calls)
+        p._key(20)
+        assert calls == ["t"] and p.message == "queued 3"
+
+    def test_an_action_can_report_nothing(self):
+        p = self.make([])
+        p._key(18)
+        assert p.message == ""
+
+    def test_the_screen_stays_open(self):
+        assert self.make([])._key(20) is False
+
+    def test_letters_still_reach_the_filter(self):
+        p = self.make([])
+        p._key(ord("t"))
+        assert p.query == "t"
+
+    def test_an_unbound_control_key_does_nothing(self):
+        p = self.make([])
+        p._key(21)
+        assert p.message == "" and p.query == ""

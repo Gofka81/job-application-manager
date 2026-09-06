@@ -80,7 +80,8 @@ class Picker:
                  modes: Sequence[tuple[str, Callable[[object], bool]]] | None = None,
                  deep: Callable[[str], Sequence] | None = None,
                  deep_label: str = "deep search",
-                 filterable: bool = True):
+                 filterable: bool = True,
+                 keys: dict[int, tuple[str, Callable[["Picker"], str]]] | None = None):
         self.all = list(rows)
         # Cycled with left/right. A filter the caller wants reachable without
         # leaving the screen and rerunning the command with a flag.
@@ -96,6 +97,11 @@ class Picker:
         # A short fixed list is not something anyone searches, and letting it
         # take typed characters only makes the screen look broken.
         self.filterable = filterable
+        # Extra actions, keyed by control character. Letters cannot be used:
+        # they belong to the filter, and taking one back would hide any row
+        # whose text contains it.
+        self.keys = dict(keys or {})
+        self.message = ""
         self.columns = list(columns)
         self.title = title
         self.search = search or (lambda r: str(r))
@@ -210,7 +216,10 @@ class Picker:
                            width - 1,
                            curses.color_pair(1) if selected else curses.A_NORMAL)
 
-        if self.detail and rows:
+        if self.message:
+            screen.addnstr(height - 2, 2, self.message[: width - 3], width - 3,
+                           curses.color_pair(3) | curses.A_BOLD)
+        elif self.detail and rows:
             text = self.detail(rows[self.cursor]) or ""
             for j, chunk in enumerate(_wrap(text, width - 3, 2)):
                 screen.addnstr(2 + body + j, 2, chunk, width - 3,
@@ -221,6 +230,8 @@ class Picker:
             hint += "   type to filter"
         if self.deep:
             hint += f"   tab {self.deep_label}"
+        for label, _ in self.keys.values():
+            hint += f"   {label}"
         if self.modes:
             hint += "   ←→ " + "/".join(label for label, _ in self.modes)
         hint += "   esc back"
@@ -255,6 +266,8 @@ class Picker:
             self.cursor = 0
         elif key in (10, 13, curses.KEY_ENTER):
             return rows[self.cursor] if rows else None
+        elif key in self.keys:
+            self.message = self.keys[key][1](self) or ""
         elif key == 9 and self.deep and self.query:
             self._deepen()
         elif key == 27:
