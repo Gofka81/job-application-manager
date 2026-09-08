@@ -118,23 +118,49 @@ def _load_env() -> None:
         os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
 
 
+#: The screen's sorts, and what each asks the radar for. Here rather than in
+#: `_pick` because the first fetch happens before the bar is built and has to
+#: agree with it.
+_SORTS = [("priority", "priority"), ("fit", "score"),
+          ("posted", "posted"), ("found", "seen")]
+
+
+def _remembered_sort() -> str:
+    """What the bar will open on. The default screen is `priority`."""
+    try:
+        saved = json.loads(_filter_state_path().read_text())
+    except (OSError, ValueError):
+        return "priority"
+    return dict(_SORTS).get(saved.get("sort"), "priority")
+
+
 def cmd_inbox(args: argparse.Namespace) -> int:
     """What job-radar has found, best fit first."""
     _load_env()
+    interactive = not args.plain and picker.usable()
+    # The whole table, once. Ordering and filtering happen here, so no screen
+    # can be missing a row the radar holds. A pipe or an agent gets the plain
+    # default order rather than whoever last used the screen.
+    sort = _remembered_sort() if interactive else "score"
     try:
-        jobs = inbox_mod.fetch(limit=args.limit, query=args.q)
+        jobs = inbox_mod.fetch_all(args.q)
     except inbox_mod.RadarError as exc:
         print(exc, file=sys.stderr)
         return 1
+    if inbox_mod.truncated(jobs):
+        print(f"the radar holds more than {inbox_mod.WHOLE_TABLE} rows; this is "
+              f"the newest {len(jobs)} of them", file=sys.stderr)
 
-    statuses = () if args.all else ("new",)
-    shortlist = inbox_mod.shortlist(jobs, args.min_score, statuses, args.max_age)
+    hidden = () if args.all else inbox_mod.DONE
+    priority = inbox_mod.priority_locations() if sort == "priority" else ()
+    shortlist = inbox_mod.shortlist(jobs, args.min_score, hidden,
+                                    args.max_age, sort=sort, priority=priority)
     if not shortlist:
         print(f"nothing matches ({len(jobs)} rows fetched)")
         return 0
 
     # A person picks with the arrow keys; an agent, a pipe or CI gets the table.
-    if not args.plain and picker.usable():
+    if interactive:
         taken: set[str] = set()
         queued: list[str] = []
 
@@ -144,8 +170,7 @@ def cmd_inbox(args: argparse.Namespace) -> int:
 
         while True:
             rows = [j for j in shortlist if j.job_id not in taken]
-            chosen = _pick(rows, statuses, args.min_score, args.max_age,
-                           args.limit)
+            chosen = _pick(rows, hidden, args.min_score, args.max_age)
             if chosen is None:
                 break
             _vacancy_screen(chosen.job_id, on_taken=remember)
@@ -165,14 +190,14 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     print(f"{len(shortlist)} of {len(jobs)} jobs\n")
     # The id, not a row number: position is not identity, and the next scan
     # reorders the list. This one can be pasted straight into `jam take`.
-    print(f"{'id':<9} {'fit':>4}  {'age':>4}  {'company':<24} {'title':<42} "
+    print(f"{'id':<9} {'fit':>4}  {'age':>5}  {'company':<24} {'title':<42} "
           f"{'where':<18} {'pay':<10} src")
-    print("-" * 122)
+    print("-" * 123)
     for job in shortlist[:args.top]:
         fit = f"{job.score:.1f}" if job.score is not None else "  -"
-        age = f"{job.age_days}d" if job.age_days is not None else "  -"
+        age = job.age_label
         flag = "" if job.jd_full else " *"
-        print(f"{job.job_id[:8]:<9} {fit:>4}  {age:>4}  {job.company[:24]:<24} "
+        print(f"{job.job_id[:8]:<9} {fit:>4}  {age:>5}  {job.company[:24]:<24} "
               f"{(job.title[:40] + flag):<42} {job.location[:18]:<18} "
               f"{job.salary:<10} {job.source}")
     print(f"\n  jam take {shortlist[0].job_id[:8]}"
@@ -219,57 +244,108 @@ def _remember_filters(filters: list) -> None:
         pass                                  # never fail a screen over this
 
 
-def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
-          limit=300):
-    def age(job):
-        if job.age_days is None:
-            return "-"
-        # `~` where the board gave no date and this is when we met it.
-        return f"{job.age_days}d" if job.dated else f"~{job.age_days}d"
+def _fit(job) -> str:
+    return f"{job.score:.1f}" if job.score is not None else "-"
 
+
+#: The radar's own bands, from its `tgfmt.dot` — "matches the dashboard's badge
+#: bands" — so a 6.5 is amber in the Telegram card, amber on the dashboard and
+#: amber here. Two tools disagreeing about what a good match is would make the
+#: colour worth less than no colour at all.
+FIT_BANDS = (7.0, 5.0)
+#: The radar's `RECENT_HOURS = 48`, its dashboard's "Recent 48h" default and the
+#: window its 🆕 New view uses; then `archive_after_days: 30` from its config,
+#: after which a row leaves the live table altogether.
+AGE_BANDS = (2, 30)
+
+
+def _fit_role(job) -> str:
+    """Traffic lights on the score, in the radar's bands."""
+    if job.score is None:
+        return "none"                      # not judged, rather than judged low
+    good, fair = FIT_BANDS
+    if job.score >= good:
+        return "good"
+    return "fair" if job.score >= fair else "poor"
+
+
+def _age_role(job) -> str:
+    """The same three lights on the age, in the radar's windows: what it calls
+    new, what is still live, and what it is about to archive."""
+    days = job.age_days
+    if days is None:
+        return "none"
+    good, fair = AGE_BANDS
+    if days <= good:
+        return "good"
+    return "fair" if days <= fair else "poor"
+
+
+def _where_parts(job) -> list[tuple[str, str]]:
+    """`remote · London` is two facts in one cell, and only one of them is a
+    place: the radar keeps remote as a column of its own. Colouring the word
+    apart from the location is how a screen says that without a second column.
+    """
+    if not job.remote:
+        return [(job.location, "cell")]
+    return ([("remote", "remote")] if not job.location
+            else [("remote", "remote"), (f" · {job.location}", "cell")])
+
+
+def _pick(jobs: list, hidden=inbox_mod.DONE, min_score=0.0, max_age=None):
+    # Age is time since the radar met the posting, which is the figure the
+    # radar's own list shows; the board's publication day is a coarser and
+    # often later-looking version of the same thing.
     columns = [
-        picker.Column("fit", 4, lambda j: f"{j.score:.1f}" if j.score is not None else "-", right=True),
-        picker.Column("age", 4, age, right=True),
+        picker.Column("fit", 4, _fit, right=True, role=_fit_role),
+        # Five, not four: `1000d` for something a board never took down used to
+        # be cut to `1000`, which reads as a number rather than a truncation.
+        picker.Column("age", 5, lambda j: j.age_label, right=True,
+                      role=_age_role),
         picker.Column("company", 22, lambda j: j.company),
         picker.Column("title", 38, lambda j: j.title, flex=True),
-        picker.Column("where", 22, lambda j: j.where),
+        picker.Column("where", 22, lambda j: j.where, parts=_where_parts),
         picker.Column("pay", 11, lambda j: j.salary),
         picker.Column("src", 10, lambda j: j.source),
     ]
 
+    # "priority" is the radar's own default: it tiers by location first — a
+    # priority city, then UK-remote, then the rest — and only sorts by score
+    # inside a tier.
+    priority = inbox_mod.priority_locations()
+
+    def shortlist(jobs):
+        return inbox_mod.shortlist(jobs, min_score, hidden, max_age,
+                                   sort=sort_filter.value, priority=priority)
+
     def deep(query: str):
         """The radar searches the JD text server-side; the list payload never
         carries it, so `spark` cannot be found by filtering what is on screen."""
-        found = inbox_mod.fetch(limit=limit, query=query, sort=sort_filter.value)
-        return inbox_mod.shortlist(found, min_score, statuses, max_age)
+        return shortlist(inbox_mod.fetch_all(query))
 
     def reload(p) -> str:
         try:
-            found = inbox_mod.fetch(limit=limit, sort=sort_filter.value)
+            found = inbox_mod.fetch_all()
         except inbox_mod.RadarError as exc:
             return str(exc)
-        p.base = inbox_mod.shortlist(found, min_score, statuses, max_age)
+        p.base = shortlist(found)
         p.all = list(p.base)
         p.deep_query = ""
         return ""
 
-    # "priority" is the radar's own default and is not a server sort: it tiers
-    # by location first — a priority city, then UK-remote, then the rest — and
-    # only sorts by score inside a tier. Done here, over the whole fetched set,
-    # which is exact while the set fits in one page.
-    priority = inbox_mod.priority_locations()
-
     def reorder(p) -> str:
+        """No round trip: the screen already holds every row the radar has, so
+        changing the sort is a re-sort and not a different question. It used to
+        refetch, which is how a change of sort could change which vacancies
+        existed — and did, since the fit page carries no unscored rows."""
+        p.all = inbox_mod.order_by(p.all, sort_filter.value, priority)
         if sort_filter.value == "priority":
-            p.all = sorted(p.base, key=lambda j: (j.tier(priority),
-                                                  -(j.score or -1)))
             return f"{', '.join(priority).title()} first, then remote" \
                 if priority else "by location tier, then fit"
-        return reload(p)
+        return ""
 
     sort_filter = picker.Filter(
-        "sort", [("priority", "priority"), ("fit", "score"),
-                 ("posted", "posted"), ("found", "seen")],
+        "sort", _SORTS,
         reload=reorder,
         hints={
             "priority": "your cities first, then remote, best fit inside each",
@@ -283,21 +359,31 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
                       keep=lambda j, v: v is None or (j.age_days or 0) <= v,
                       hints={"48h": "published in the last two days",
                              "7d": "published in the last week",
-                             "all": "everything still open  ·  ~ means the "
-                                    "board gave no date, so it is when we "
-                                    "found it"}),
+                             "all": "everything still open  ·  age is time "
+                                    "since the radar found it"}),
         sort_filter,
+        # A row with no score has not been judged below the bar, it has not
+        # been judged. Dropping those hid exactly the freshest rows — the
+        # radar scores overnight, so this morning's arrivals have no number
+        # yet — so the bar applies to them only while fit is what orders the
+        # list, which is the one case where an unscored row has no place to sit.
         picker.Filter("min fit", [("any", None), ("7+", 7.0), ("8+", 8.0),
                                   ("9", 9.0)],
-                      keep=lambda j, v: v is None or (j.score or 0) >= v,
-                      hints={"any": "including the ones with no score yet",
+                      keep=lambda j, v: (v is None or (j.score or 0) >= v
+                                         or (j.score is None
+                                             and sort_filter.value != "score")),
+                      hints={"any": "every row, scored or not",
                              "7+": "a reasonable match and above",
                              "8+": "a strong match",
-                             "9": "the radar's best only"}),
+                             "9": "the radar's best only  ·  not-yet-scored "
+                                  "rows stay unless the sort is fit"}),
     ]
     _restore_filters(filters)
-    if sort_filter.value == "priority":
-        jobs = sorted(jobs, key=lambda j: (j.tier(priority), -(j.score or -1)))
+    # The caller fetched before the remembered sort was known, so the rows in
+    # hand are in score order whatever the bar says. Reordering them here is
+    # what makes the screen open in the order it claims; a change of sort from
+    # the bar refetches, which is what picks up rows this page never held.
+    jobs = inbox_mod.order_by(jobs, sort_filter.value, priority)
 
     def score_unrated(p) -> str:
         pending = [j.job_id for j in p.rows if j.score is None][:20]
@@ -320,6 +406,9 @@ def _pick(jobs: list, statuses=("new",), min_score=0.0, max_age=None,
         # The reason sits beside the score rather than behind a flag: a bare
         # number looks more objective than it is and cannot be argued with.
         detail=lambda j: j.reason,
+        # Named the same as the section on the vacancy screen: it is the same
+        # sentence from the same place, and one thing should not have two names.
+        detail_label="why the radar rated it",
     )
     chosen = screen.run()
     _remember_filters(screen.filters)
@@ -338,8 +427,22 @@ def _vacancy_screen(job_id: str, on_taken=None) -> None:
     company, title = job.get("company") or "", job.get("title") or ""
     url = job.get("url") or ""
 
-    def field(label, value):
-        return f"  {label:<11} {value}" if value else None
+    # The same pieces the list is drawn from: a label is a name, a value that
+    # means better or worse carries its light, and the radar's prose is the
+    # radar's prose. A screen where the label and its value are the same colour
+    # is a screen you read twice — once to find the fields, once to read them.
+    row = inbox_mod.Job.from_row(job)
+
+    def field(label, value, role="cell"):
+        if not value:
+            return None
+        return [(f"  {label:<9}", "name"), (str(value), role)]
+
+    def rule():
+        return [("  " + "─" * 58, "rule")]
+
+    def heading(text):
+        return [("  " + text, "name")]
 
     salary = ""
     lo, hi, cur = job.get("salary_min"), job.get("salary_max"), job.get("currency") or ""
@@ -347,40 +450,43 @@ def _vacancy_screen(job_id: str, on_taken=None) -> None:
         salary = (f"{cur}{int((lo or 0)/1000)}k–{cur}{int(hi/1000)}k" if lo and hi
                   else f"{cur}{int((lo or hi)/1000)}k")
 
-    age = ""
     posted, seen = job.get("posted_at"), job.get("first_seen")
-    when = posted or seen
-    if when:
-        try:
-            days = (date.today() - date.fromisoformat(str(when)[:10])).days
-            age = "today" if days == 0 else f"{days} day{'s' if days != 1 else ''} ago"
-        except ValueError:
-            age = str(when)[:10]
-        if not posted:
-            # Falling back to discovery: saying "posted" for that would be
-            # inventing a date the row does not hold.
-            age += " — when the radar found it; no publication date on this one"
+    when = seen or posted
+    # The same reading of the stamp as the list column, so a row cannot be
+    # "2 hours ago" on one screen and something else on the next.
+    age = row.age_phrase
+    if when and not age:
+        age = str(when)[:10]               # a stamp we could not read at all
 
     seen = take_mod.already_applied(cfg.applications, company, title)
 
+    fit = (f"{job.get('score')}/10" if job.get("score") is not None
+           else "not scored yet — press s")
     lines = [line for line in [
-        field("fit", f"{job.get('score')}/10" if job.get("score") is not None
-              else "not scored yet — press s"),
-        field("posted", age),
-        field("where", job.get("location")),
+        field("fit", fit, _fit_role(row)),
+        field("found", age, _age_role(row)),
+        # The board's day, where it gave one, sits under the age rather than
+        # replacing it: it is the coarser figure and it is often the later one.
+        field("posted", str(posted)[:10] if posted else "", "option"),
+        ([(f"  {'where':<9}", "name")] + _where_parts(row)
+         if row.where else None),
         field("pay", salary),
-        field("source", job.get("source")),
-        field("link", url),
+        field("source", job.get("source"), "option"),
+        field("link", url, "option"),
     ] if line]
 
     if job.get("eval_reason"):
-        lines += ["", "  why the radar rated it"]
-        lines += [f"    {chunk}" for chunk in _chunks(job["eval_reason"], 88)]
+        lines += ["", heading("why the radar rated it")]
+        lines += [[("    " + chunk, "hint")]
+                  for chunk in _chunks(job["eval_reason"], 88)]
     if seen:
-        lines += ["", f"  ALREADY APPLIED: {', '.join(seen)}"]
+        # Loud, and in the colour the screen uses for a bad number: applying
+        # twice to one company is the mistake this screen exists to prevent.
+        lines += ["", [("  ALREADY APPLIED: ", "poor"),
+                       (", ".join(seen), "poor")]]
 
     body = (job.get("description") or "").strip()
-    lines += ["", "  " + "─" * 60, ""]
+    lines += ["", rule(), ""]
     if body:
         for paragraph in re.split(r"\n\s*\n", body):
             lines += _chunks(" ".join(paragraph.split()), 92) + [""]
@@ -410,7 +516,11 @@ def _vacancy_screen(job_id: str, on_taken=None) -> None:
                picker.Act("o", "open", lambda: openurl.open_url(url))]
     if job.get("score") is None:
         actions.append(picker.Act("s", "score it", score_now))
-    picker.Detail(f"{company} · {title}", lines, actions).run()
+    # The subtitle carries what the row is rather than what it says: the state
+    # the radar has it in, and the id to paste into `jam take`.
+    state = job.get("status") or "new"
+    picker.Detail(f"{company} · {title}", lines, actions,
+                  subtitle=f"{state}  ·  {job_id[:8]}").run()
 
 
 def _resolve(query: str, jobs: list):
@@ -985,7 +1095,7 @@ def cmd_triage(args: argparse.Namespace) -> int:
     """Ask the radar to score vacancies it has not scored yet."""
     _load_env()
     try:
-        jobs = inbox_mod.fetch(limit=args.limit, sort="seen")
+        jobs = inbox_mod.fetch_all()
         pending = [j for j in jobs if j.score is None and j.status == "new"]
         if not pending:
             print("nothing left to score")
@@ -1003,7 +1113,7 @@ def cmd_triage(args: argparse.Namespace) -> int:
 def _triage_screen(cfg) -> int:
     _load_env()
     try:
-        jobs = inbox_mod.fetch(limit=300, sort="seen")
+        jobs = inbox_mod.fetch_all()
     except inbox_mod.RadarError as exc:
         picker.view([str(exc)], title="triage")
         return 0
@@ -1034,7 +1144,11 @@ def cmd_take(args: argparse.Namespace) -> int:
     if len(args.query) >= 12 and all(c in "0123456789abcdef" for c in args.query):
         return _take(args.query, args.yes)
     try:
-        jobs = inbox_mod.fetch(limit=args.limit)
+        # By name, over everything: a vacancy found this morning has no score
+        # yet, and a score-ordered page does not contain it — `jam take
+        # "la fosse"` answered "no such vacancy" for exactly the rows the
+        # screen was shouting about.
+        jobs = inbox_mod.fetch_all()
     except inbox_mod.RadarError as exc:
         print(exc, file=sys.stderr)
         return 1
@@ -1235,11 +1349,11 @@ def main(argv: list[str] | None = None) -> int:
 
     ib = sub.add_parser("inbox", help="what job-radar has found")
     ib.add_argument("--top", type=int, default=20, help="rows to show")
-    ib.add_argument("--limit", type=int, default=300, help="rows to fetch")
     ib.add_argument("--min-score", type=float, default=0.0)
     ib.add_argument("--max-age", type=int, help="days since posted")
     ib.add_argument("--q", help="search title, company and JD text")
-    ib.add_argument("--all", action="store_true", help="every status, not just new")
+    ib.add_argument("--all", action="store_true",
+                    help="the decided ones too: expired, applied, archived")
     ib.add_argument("--why", action="store_true", help="show the triage reason")
     ib.add_argument("--yes", "-y", action="store_true",
                     help="skip the confirmation when taking from the picker")
@@ -1267,12 +1381,10 @@ def main(argv: list[str] | None = None) -> int:
 
     tr = sub.add_parser("triage", help="score vacancies the radar has not rated")
     tr.add_argument("--count", type=int, default=20)
-    tr.add_argument("--limit", type=int, default=300)
     tr.set_defaults(func=cmd_triage)
 
     tk = sub.add_parser("take", help="turn a vacancy into an application")
     tk.add_argument("query", help="job id, or part of the company or title")
-    tk.add_argument("--limit", type=int, default=300)
     tk.add_argument("--yes", "-y", action="store_true")
     tk.set_defaults(func=cmd_take)
 

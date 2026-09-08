@@ -81,16 +81,6 @@ class Job:
         return 2
 
     @property
-    def dated(self) -> bool:
-        """Whether the age is the publication date or a stand-in for it.
-
-        Four sources in a hundred give no date, and for those the only thing
-        left is when a scan met the posting. Shown, but marked: an estimate
-        printed as a fact is the kind of wrong nobody catches.
-        """
-        return bool(self.posted_at)
-
-    @property
     def where(self) -> str:
         """Remote is a column of its own in the radar; showing it beside the
         place saves reading a location string to find out."""
@@ -98,23 +88,89 @@ class Job:
             return f"remote · {self.location}" if self.location else "remote"
         return self.location
 
+    @staticmethod
+    def _stamp(value) -> tuple[datetime, bool] | None:
+        """One stamp read, with whether it carries a clock and not just a day.
+
+        The offset is kept rather than sliced off: an hour is only worth
+        showing if it is the reader's hour, and a `Z` read as local time is off
+        by one in Britain for half the year.
+        """
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return (datetime.fromisoformat(text.replace("Z", "+00:00")),
+                    len(text) > 10 and text[10] in "T ")
+        except ValueError:
+            return None
+
+    @property
+    def moment(self) -> tuple[datetime, bool] | None:
+        """When the age counts from: the moment a scan met the posting.
+
+        Discovery, not publication, and deliberately. Boards give a bare day
+        for `posted_at` — `2026-09-08` and no clock — so counting from it made
+        an advert found three hours ago read as `1d` because the board called
+        it yesterday's, which is the wrong answer to the only question the
+        column asks: is this worth opening now. The radar's own list counts
+        from discovery for the same reason, and this now agrees with it.
+
+        `posted_at` is the fallback for the rare row with no discovery stamp.
+        """
+        for value in (self.first_seen, self.posted_at):
+            if (stamp := self._stamp(value)) is not None:
+                return stamp
+        return None
+
     @property
     def age_days(self) -> int | None:
-        """Days since the board published it, falling back to discovery.
+        """Whole days since the radar met it."""
+        moment = self.moment
+        if moment is None:
+            return None
+        return (date.today() - moment[0].date()).days
 
-        The two differ whenever a posting is found late or relisted: one advert
-        published on the 1st appears twice, met on the 1st and again on the
-        6th, and only `posted_at` tells you it is the same five-day-old role.
+    @property
+    def age_hours(self) -> float | None:
+        """Hours since the radar met it, or None where the only stamp on the
+        row is a bare date — an hour counted from midnight is invented."""
+        moment = self.moment
+        if moment is None or not moment[1]:
+            return None
+        when = moment[0]
+        # `tzinfo` of a naive stamp is None, which asks for a naive now.
+        return max(0.0, (datetime.now(when.tzinfo) - when).total_seconds() / 3600)
+
+    @property
+    def age_label(self) -> str:
+        """Age in five characters: hours through the first day, then days.
+
+        A column of whole days said `0d` for every row met since midnight,
+        which is most of a morning's list and exactly the rows worth telling
+        apart — a vacancy found two hours ago is worth answering before one
+        from breakfast.
         """
-        for value in (self.posted_at, self.first_seen):
-            if not value:
-                continue
-            try:
-                seen = datetime.fromisoformat(str(value)[:19]).date()
-            except ValueError:
-                continue
-            return (date.today() - seen).days
-        return None
+        if self.age_days is None:
+            return "-"
+        hours = self.age_hours
+        if hours is None or hours >= 24:
+            return f"{self.age_days}d"
+        return "<1h" if hours < 1 else f"{int(hours)}h"
+
+    @property
+    def age_phrase(self) -> str:
+        """The same age with room to spell it out."""
+        if self.age_days is None:
+            return ""
+        hours = self.age_hours
+        if hours is not None and hours < 24:
+            if hours < 1:
+                return "less than an hour ago"
+            whole = int(hours)
+            return f"{whole} hour{'s' if whole != 1 else ''} ago"
+        days = self.age_days
+        return "today" if days == 0 else f"{days} day{'s' if days != 1 else ''} ago"
 
     def slug(self) -> str:
         def part(text: str) -> str:
@@ -229,12 +285,91 @@ def priority_locations(base: str | None = None,
     return tuple(str(p).strip().lower() for p in places if str(p).strip())
 
 
+#: `limit`, `sort` and `q` are the whole of the radar's list API: no paging,
+#: no offset, no cursor, and no filter for the rows that have no score yet.
+#: Asking for more rows than it holds returns all of them, so this is the whole
+#: table — 937 rows, 595 KB and a third of a second today, which is the same as
+#: asking for 300 because the cost is the round trip and not the rows.
+WHOLE_TABLE = 5000
+
+
+def fetch_all(query: str | None = None, base: str | None = None,
+              token: str | None = None) -> list[Job]:
+    """Every row the radar holds, ordered and filtered here afterwards.
+
+    Fetching a page and ordering it is what loses rows, and it lost the ones
+    that matter most: the radar's `sort=score` answers with scored rows only,
+    so a vacancy found an hour ago and not yet scored was in no page any
+    fit-ordered screen ever asked for. Widening the limit does not fix that,
+    and neither does a second request — the hub has to hold the set it is
+    choosing from.
+
+    Asked for by discovery so that if the table ever does outgrow one response,
+    what falls off the end is the oldest rows rather than this morning's. That
+    the end was reached at all is `truncated`, which the screen says out loud
+    rather than quietly showing less.
+    """
+    return fetch(limit=WHOLE_TABLE, query=query, sort="seen",
+                 base=base, token=token)
+
+
+def truncated(jobs: list[Job]) -> bool:
+    """Whether the radar had more rows than one response can carry.
+
+    It cannot happen at 937 rows. It is here because the day it does, the
+    screen has to say so: a list quietly missing its tail is the failure this
+    whole approach exists to prevent.
+    """
+    return len(jobs) >= WHOLE_TABLE
+
+
+def order_by(jobs: list[Job], sort: str = "score",
+             priority: tuple[str, ...] = ()) -> list[Job]:
+    """Put a set already in hand into the order the screen asks for.
+
+    The server decides *which* rows arrive — ordering a page here cannot pull
+    in a row the page never contained — but it does not decide what happens to
+    them afterwards. Re-sorting by score regardless of the chosen sort is what
+    made `posted` and `found` do nothing at all.
+
+    A row with no date sorts last rather than as the oldest: absent is not the
+    same as old, and putting them at either end of the dates would be a claim
+    the row does not make.
+    """
+    if sort == "priority":
+        return sorted(jobs, key=lambda j: (j.tier(priority), -(j.score or -1)))
+    if sort in ("posted", "seen"):
+        field = "posted_at" if sort == "posted" else "first_seen"
+        known = [j for j in jobs if getattr(j, field)]
+        unknown = [j for j in jobs if not getattr(j, field)]
+        return sorted(known, key=lambda j: str(getattr(j, field)),
+                      reverse=True) + unknown
+    return sorted(jobs, key=lambda j: (j.score is None, -(j.score or 0)))
+
+
+#: The statuses the inbox leaves out, because each has already been decided:
+#: the posting is gone, it is in the hub, or it was dismissed in the radar.
+#: Everything else is open, `viewed` included — a vacancy read in the radar's
+#: own dashboard is still a vacancy to answer.
+#:
+#: An exclusion rather than a list of what to show. Naming what to show is what
+#: hid `viewed` for as long as `viewed` has existed, and it would hide the next
+#: status the radar invents just as quietly; naming what to hide means a status
+#: nobody here has heard of arrives on screen, which is the safe way round.
+DONE = ("expired", "saved", "applied", "rejected", "archived")
+
+
 def shortlist(jobs: list[Job], min_score: float = 0.0,
-              statuses: tuple[str, ...] = ("new",),
-              max_age: int | None = None) -> list[Job]:
-    """Highest score first, and unscored rows last rather than first."""
+              hidden: tuple[str, ...] = DONE,
+              max_age: int | None = None, sort: str = "score",
+              priority: tuple[str, ...] = ()) -> list[Job]:
+    """The rows still worth a decision, in the asked-for order.
+
+    Highest score first by default, with unscored rows last rather than first.
+    `hidden=()` keeps everything, history included.
+    """
     out = [j for j in jobs
-           if (not statuses or j.status in statuses)
+           if j.status not in hidden
            and (j.score or 0) >= min_score
            and (max_age is None or (j.age_days or 0) <= max_age)]
-    return sorted(out, key=lambda j: (j.score is None, -(j.score or 0)))
+    return order_by(out, sort, priority)
