@@ -55,12 +55,18 @@ def already_applied(root: Path, company: str, title: str) -> list[str]:
     return out
 
 
-def record(job: dict, when: date | None = None) -> dict:
-    """`application.json` for a vacancy taken from the radar.
+def record(job: dict, when: date | None = None,
+           discovery: str = "radar") -> dict:
+    """`application.json` for a vacancy being taken.
 
     `submitted_at` stays null until a submission is confirmed, and there is no
     status field at all: status is a fold of the log, and a second copy here
     would be a second truth to keep in step.
+
+    `discovery` is how it was found — "radar" or "link". The radar's own
+    fields stay empty on a link, rather than taking a default: a score
+    invented here would be indistinguishable later from one the radar gave,
+    which is what `score_source` exists to keep answerable.
     """
     description = job.get("description") or ""
     return {
@@ -69,11 +75,11 @@ def record(job: dict, when: date | None = None) -> dict:
         "title": job.get("title"),
         "source_url": job.get("url"),
         "channel": CHANNEL_BY_SOURCE.get(job.get("source", ""), job.get("source")),
-        "discovery": "radar",
+        "discovery": discovery,
         "role_archetype": None,
         "cv_version": None,
         "radar_score": job.get("score"),
-        "score_source": "radar",
+        "score_source": "radar" if job.get("score") is not None else None,
         "radar_job_id": job.get("job_id"),
         "jd_hash": hashlib.sha1(description.encode()).hexdigest() if description else None,
         "jd_full": bool(job.get("jd_full", True)),
@@ -82,9 +88,10 @@ def record(job: dict, when: date | None = None) -> dict:
     }
 
 
-def create(root: Path, job: dict, when: date | None = None) -> tuple[Path, dict]:
+def create(root: Path, job: dict, when: date | None = None,
+           discovery: str = "radar") -> tuple[Path, dict]:
     """Write the folder. Returns where it went and what was written."""
-    data = record(job, when)
+    data = record(job, when, discovery)
     folder = root / data["app_id"]
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "application.json").write_text(json.dumps(data, indent=2) + "\n")

@@ -125,7 +125,9 @@ For the human:
 
 ## Then
 
-`/apply <app_id>` fills the form. You do not submit; the human does.
+`jam apply <app_id>` fills the form. It re-checks what you built before it
+opens anything, so a CV that stopped passing after your last edit does not
+reach a posting. You do not submit; the human does.
 
 ## Why the honest gaps matter more than the CV
 

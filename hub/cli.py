@@ -18,8 +18,8 @@ from pathlib import Path
 import yaml
 
 from hub import (agent, answerbank, atscheck, backfill, bootstrap, check as check_mod, config,
-                 coverage, inbox as inbox_mod, latex, picker, render,
-                 openurl, submit as submit_mod, take as take_mod)
+                 coverage, inbox as inbox_mod, intake, latex, picker, render,
+                 openurl, running, submit as submit_mod, take as take_mod)
 
 
 def cmd_render(args: argparse.Namespace) -> int:
@@ -161,12 +161,24 @@ def cmd_inbox(args: argparse.Namespace) -> int:
 
     # A person picks with the arrow keys; an agent, a pipe or CI gets the table.
     if interactive:
+        cfg = config.load()
         taken: set[str] = set()
-        queued: list[str] = []
+        started: list[str] = []
+        held: list[str] = []
 
+        # Taking a vacancy starts its CV there and then, in the background
+        # (D77). It used to be queued and run once the screens closed, which
+        # meant taking three vacancies bought three tailorings back to back
+        # with nothing else possible until they finished.
         def remember(job_id: str, app_id: str) -> None:
             taken.add(job_id)
-            queued.append(app_id)
+            started.append(app_id)
+            if args.no_tailor:
+                return
+            if not running.room_for_more(cfg.applications):
+                held.append(app_id)
+                return
+            running.start(cfg.applications / app_id, app_id, config.ROOT)
 
         while True:
             rows = [j for j in shortlist if j.job_id not in taken]
@@ -175,17 +187,18 @@ def cmd_inbox(args: argparse.Namespace) -> int:
                 break
             _vacancy_screen(chosen.job_id, on_taken=remember)
 
-        # Tailoring runs once the screens are closed rather than inside them:
-        # it takes a minute and has plenty to say, and neither fits behind a
-        # list you are still browsing.
-        if args.no_tailor:
-            for app_id in queued:
-                print(f"taken: {app_id} — next: /tailor {app_id}")
-            return 0
-        code = 0
-        for app_id in queued:
-            code = _tailor(app_id) or code
-        return code
+        for app_id in started:
+            if args.no_tailor:
+                where = "not tailored"
+            elif app_id in held:
+                where = f"queued — {running.LIMIT} already running"
+            else:
+                where = "tailoring"
+            print(f"taken: {app_id} — {where}, see `jam` › applications")
+        if held:
+            print(f"\n{len(held)} waiting: `jam apply <id>`, or press b on the "
+                  f"application screen once the others finish")
+        return 0
 
     print(f"{len(shortlist)} of {len(jobs)} jobs\n")
     # The id, not a row number: position is not identity, and the next scan
@@ -539,9 +552,9 @@ def _vacancy_screen(job_id: str, on_taken=None) -> None:
             return str(exc)
         return "queued for scoring"
 
-    actions = [picker.Act("a", "apply", apply_now,
+    actions = [picker.Act("a", "take it", apply_now,
                           confirm="create the application?"),
-               picker.Act("o", "open", lambda: openurl.open_url(url))]
+               picker.Act("o", "open posting", lambda: openurl.open_url(url))]
     if job.get("score") is None:
         actions.append(picker.Act("s", "score it", score_now))
     # The subtitle carries what the row is rather than what it says: the state
@@ -605,7 +618,122 @@ def _take(job_id: str, assume_yes: bool) -> int:
     except inbox_mod.RadarError as exc:
         # The folder is the thing that matters; the radar can be told again.
         print(f"  could not mark it saved: {exc}", file=sys.stderr)
-    print("\nnext: /tailor")
+    print(f"\nnext: jam apply {record['app_id']}")
+    return 0
+
+
+def _paste_jd() -> str:
+    """The JD typed or pasted in, ended with ctrl-d.
+
+    The fallback rather than an error path: a board behind a login, or one
+    that renders through enough javascript that a fetch gets a shell, is
+    common enough to be part of the design.
+    """
+    print("\nPaste the job description, then ctrl-d:\n")
+    try:
+        return sys.stdin.read().strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+
+
+def _ask(question: str, default: str = "") -> str:
+    shown = f"{question} [{default}]: " if default else f"{question}: "
+    try:
+        return input(shown).strip() or default
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return default
+
+
+def _link_screen(cfg) -> int:
+    """Take a posting link from the menu.
+
+    Under `inbox` because it answers the same question — what am I applying to
+    — from the other source. Menu handlers run outside curses, so the URL is
+    asked for the way every other prompt in this file asks.
+    """
+    print("\nPaste the link to the posting, or leave it empty to go back.")
+    url = _ask("link")
+    if not url:
+        return 0
+    if not intake.looks_like_url(url):
+        print("that is not a link — it needs to start http:// or https://",
+              file=sys.stderr)
+        return 1
+    return _take_link(url, assume_yes=False, paste=False, tailor=True)
+
+
+def _take_link(url: str, assume_yes: bool, paste: bool,
+               tailor: bool = False) -> int:
+    """Turn an arbitrary posting link into an application (B1.3).
+
+    Everything else starts at the radar's list, which covers the boards it
+    watches and nothing else — a posting someone sends you had no way in.
+
+    The agent reads the page and the human corrects it, rather than the human
+    typing it and the agent checking: a fetch that half worked still saves the
+    company, the title and the length of the JD, and those are the fields
+    nobody wants to retype.
+    """
+    cfg = config.load()
+    job, why = None, ""
+    if not paste:
+        print(f"reading {url}\n")
+        try:
+            job = intake.from_url(url, config.ROOT, cfg.agent_model,
+                                  on_line=lambda line: print(f"  {line}", flush=True))
+        except agent.AgentMissing as exc:
+            why = str(exc)
+        except intake.IntakeError as exc:
+            why = str(exc)
+    if job is None:
+        if why:
+            print(f"\ncould not read the page: {why}", file=sys.stderr)
+        job = intake.job_row(url, {
+            "company": _ask("company"), "title": _ask("title"),
+            "location": _ask("location (optional)")}, description=_paste_jd())
+
+    company, title = job["company"], job["title"]
+    if not company or not title:
+        print("a company and a title are the folder's name; nothing created",
+              file=sys.stderr)
+        return 1
+    print(f"\n{company} · {title}")
+    print(f"  {job['source'] or 'unknown board'} · {url}")
+    print(f"  JD: {len(job['description'])} chars"
+          + ("" if job["jd_full"] else "  — empty, so coverage would be guesswork"))
+
+    seen = take_mod.already_applied(cfg.applications, company, title)
+    if seen:
+        print(f"\n  already applied: {', '.join(seen)}")
+
+    if not assume_yes:
+        try:
+            if input("\ncreate the application? [y/N] ").strip().lower() != "y":
+                print("nothing created")
+                return 0
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+
+    folder, record = take_mod.create(cfg.applications, job, discovery="link")
+    print(f"\ncreated {folder}")
+    print(f"  application.json  channel={record['channel']} "
+          f"discovery={record['discovery']} radar_score={record['radar_score']}")
+    print(f"  jd.md             {len(job['description'])} chars")
+    # Nothing to tell the radar: it never had this one, so there is no row to
+    # mark saved and no dedup of its own to update.
+    if tailor:
+        # Same as taking one from the inbox screen: the CV starts now and you
+        # go back to the menu (D77).
+        if running.room_for_more(cfg.applications):
+            running.start(folder, record["app_id"], config.ROOT)
+            print("\ntailoring — see `jam` › applications")
+        else:
+            print(f"\n{running.LIMIT} tailorings already running")
+            print(f"next: jam apply {record['app_id']}")
+        return 0
+    print(f"\nnext: jam apply {record['app_id']}")
     return 0
 
 
@@ -636,6 +764,8 @@ def _menu_actions(cfg) -> list[Action]:
     return [
         Action("inbox", "inbox", "vacancies from job-radar",
                lambda: main(["inbox"])),
+        Action("link", "take a link", "a posting the radar has not seen",
+               lambda: _link_screen(cfg)),
         Action("apps", "applications",
                f"{len(applications)} in data/applications",
                lambda: _list_applications(cfg)),
@@ -648,6 +778,12 @@ def _menu_actions(cfg) -> list[Action]:
                lambda: picker.view(_config_lines(cfg), title="config")),
         Action("quit", "quit", "", lambda: None),
     ]
+
+
+# How often a screen showing a background job redraws itself. Slow enough to
+# cost nothing, fast enough that a stage changing under you reads as the thing
+# happening rather than as the screen being wrong.
+TICK_MS = 700
 
 
 def _applications(cfg) -> list[dict]:
@@ -683,6 +819,15 @@ def _stage(record: dict) -> tuple[str, str]:
     `jam` cannot run the next step itself — the deterministic half is not
     allowed to call a model (D21) — so it names it and you run it.
     """
+    # Asked before the cache, and never cached: it is one stat, and it is the
+    # only part of the answer that changes while nobody is touching the
+    # screen. Caching it would leave a row reading `tailoring…` after the run
+    # that put it there had finished.
+    app_id = record.get("app_id")
+    if running.current(record["_folder"]):
+        return "tailoring…", f"jam apply {app_id}"
+    if record.get("_stage", ("", ""))[0] == "tailoring…":
+        record.pop("_stage")            # it just finished; the folder changed
     if "_stage" not in record:
         record["_stage"] = _work_out_stage(record)
     return record["_stage"]
@@ -693,23 +838,31 @@ def _work_out_stage(record: dict) -> tuple[str, str]:
     app_id = record.get("app_id")
     if record.get("submitted_at"):
         return "submitted", ""
+    # One command whatever the answer: `jam apply` tailors what is missing,
+    # rebuilds what is stale, and only then opens the form. Naming a different
+    # command per stage made the reader work out which half they were in.
+    nxt = f"jam apply {app_id}"
     pdf = folder / "cv.pdf"
     if not pdf.exists():
-        return "no cv", f"/tailor {app_id}"
+        return "no cv", nxt
     pages = atscheck.page_count(pdf)
     budget = config.load().thresholds.cv_max_pages
     if pages and budget and pages > budget:
-        return f"{pages} pages", f"/tailor {app_id}"
+        return f"{pages} pages", nxt
     for name, missing in (("coverage.yaml", "no coverage"),
                           ("changes.md", "no notes")):
         if not (folder / name).exists():
-            return missing, f"/tailor {app_id}"
-    return "ready", f"/apply {app_id}"
+            return missing, nxt
+    return "ready", nxt
 
 
 def _application_detail(record: dict) -> list:
     folder = record["_folder"]
-    files = sorted(p.name for p in folder.iterdir() if p.is_file())
+    # Dotfiles are the working files of the folder rather than its contents:
+    # a marker and a log are what the screen is reporting from, not two more
+    # things to read.
+    files = sorted(p.name for p in folder.iterdir()
+                   if p.is_file() and not p.name.startswith("."))
     stage, action = _stage(record)
     score = record.get("radar_score")
 
@@ -729,6 +882,7 @@ def _application_detail(record: dict) -> list:
         _field("files", ", ".join(files), "option"),
     ] if line]
 
+    lines += _tailoring_lines(record)
     lines += _detail_checks(folder)
     jd = folder / "jd.md"
     if jd.exists():
@@ -738,6 +892,26 @@ def _application_detail(record: dict) -> list:
         lines += ["", _section("the posting"), ""]
         lines += _chunks(text, 96)[:14]
     return lines
+
+
+def _tailoring_lines(record: dict) -> list:
+    """What the agent is doing, or the last thing it did.
+
+    The log outlives the run on purpose. The minute after a tailoring fails is
+    exactly when what it was doing matters, and by then the process it was
+    doing it in is gone.
+    """
+    folder = record["_folder"]
+    run = running.current(folder)
+    tail = running.tail(folder, 8 if run else 4)
+    if not tail and not run:
+        return []
+    if run:
+        head = f"running for {int(run.age.total_seconds())}s — this screen keeps up"
+    else:
+        head = "from the last run"
+    return ["", _section("tailoring"), [("  " + head, "hint")], ""] + \
+        [[("    " + line[:96], "cell" if run else "option")] for line in tail]
 
 
 def _detail_checks(folder: Path) -> list[str]:
@@ -835,6 +1009,7 @@ def _list_applications(cfg) -> int:
             records, columns, title="applications",
             search=lambda r: (f"{r.get('company')} {r.get('title')} "
                               f"{_stage(r)[0]}"),
+            refresh_ms=TICK_MS,
             keys={24: ("^x delete", delete)},
             # Under the list, the reason the stage says what it says: the page
             # count that failed, the requirement nothing covers. The column has
@@ -884,6 +1059,10 @@ def _delete_application(record: dict, cfg) -> str:
     record and the notes behind both, and one keystroke should not be able to
     end that. The status log is left alone, being append-only by design.
     """
+    # Moving the folder out from under a running agent leaves it writing into
+    # a path nothing will look at again.
+    if running.current(record["_folder"]):
+        return "still tailoring — let it finish first"
     try:
         gone = take_mod.discard(record["_folder"], cfg.data / ".trash")
     except OSError as exc:
@@ -904,30 +1083,51 @@ def _delete_question(record: dict) -> str:
 def _application_screen(record: dict, cfg) -> None:
     """One application in full, with the two things worth doing to it.
 
-    Rebuilding lives here rather than only on the command line because the
-    reason to rebuild is almost always something read on this screen: a page
-    count over budget, a claim the gate rejected.
+    Building lives here rather than only on the command line because the
+    reason to build is almost always something read on this screen: a page
+    count over budget, a claim the gate rejected, a tailoring that failed and
+    left nothing behind.
     """
     folder = record["_folder"]
     # Named like the vacancy screen: what it is at the top, the id and where it
     # stands underneath, so the two screens are read the same way.
+    def redraw() -> None:
+        detail.lines = _application_detail(record)
+        detail.subtitle = f"{record.get('app_id', '')}  ·  {_stage(record)[0]}"
+
     detail = picker.Detail(
         f"{record.get('company')} · {record.get('title')}",
         _application_detail(record),
-        subtitle=f"{record.get('app_id', '')}  ·  {_stage(record)[0]}")
+        subtitle=f"{record.get('app_id', '')}  ·  {_stage(record)[0]}",
+        # Rebuilt from the folder every tick rather than patched by whatever
+        # last happened: the folder is the truth, and a background job changes
+        # it without going through this screen at all.
+        refresh=redraw, refresh_ms=TICK_MS)
 
-    def rebuild() -> str:
-        ok, lines = _rebuild(folder, cfg)
-        # The stage is worked out from the folder, and the folder just changed.
+    def build() -> str:
+        """One key, whatever the folder holds.
+
+        The two things it can do cost three orders of magnitude apart, so only
+        one of them is allowed to happen between two redraws. Recompiling is
+        seconds and silent — latexmk and pdftotext both capture their own
+        output — so it runs here. Writing a CV is minutes of an agent, so it
+        is started and let go of, and the screen reports on it instead.
+        """
+        if running.current(folder):
+            return "already tailoring"
         record.pop("_stage", None)
-        detail.lines = (_application_detail(record)
-                        + ["", _section("rebuild"), ""]
-                        + [[("    " + line, "cell" if ok else "poor")]
-                           for line in lines])
-        detail.subtitle = f"{record.get('app_id', '')}  ·  {_stage(record)[0]}"
-        return "rebuilt, passes" if ok else "rebuilt, does not pass"
+        if all((folder / name).exists() for name in TAILOR_WRITES):
+            ok, lines = _rebuild(folder, cfg)
+            return "built, passes" if ok else "built, does not pass"
+        if not running.room_for_more(cfg.applications):
+            return f"{running.LIMIT} tailorings already running — try in a minute"
+        running.start(folder, record["app_id"], config.ROOT)
+        return "tailoring started — it keeps going if you leave"
 
-    actions = [picker.Act("b", "rebuild cv", rebuild)]
+    # "rebuild" was a lie in the case that actually sends you here: tailoring
+    # failed, there is no cv.tex, and the button that was supposed to fix it
+    # could only report that there was nothing to rebuild.
+    actions = [picker.Act("b", "build cv", build)]
     url = record.get("source_url")
     if url:
         actions.append(picker.Act("o", "open posting",
@@ -1121,6 +1321,41 @@ def _rebuild(folder: Path, cfg) -> tuple[bool, list[str]]:
     return report.ok, ["built cv.pdf", "", *report.report().splitlines()]
 
 
+# What a finished tailoring leaves behind. Any one of them absent means the
+# tailoring did not finish, whatever else the folder holds — a cv.tex with no
+# coverage.yaml beside it is a CV nobody can say is honest.
+TAILOR_WRITES = ("cv.tex", "coverage.yaml", "changes.md")
+
+
+def _ensure_cv(folder: Path, cfg, app_id: str,
+               fresh: bool = False) -> tuple[bool, list[str]]:
+    """Get one application to a CV that passes, doing whichever step is missing.
+
+    Rebuilding assumes a `cv.tex` to rebuild, and the case that sends you
+    looking for the button is the one where tailoring failed and there is
+    none. So one action covers both: tailor when the folder is short of
+    something a tailoring writes, recompile when it is not.
+
+    The tailoring is followed by a rebuild rather than trusted. The agent
+    reports what it wrote; what has to be true is that the PDF on disk came
+    from the cv.tex on disk and still passes, and recompiling is the only
+    thing that establishes it.
+    """
+    # The screen can have started one. Two agents writing one cv.tex is a CV
+    # neither of them wrote.
+    if running.current(folder):
+        return False, ["a tailoring is already running in the background",
+                       "wait for it, or watch it on the application screen"]
+    missing = [name for name in TAILOR_WRITES if not (folder / name).exists()]
+    if fresh or missing:
+        why = "starting over" if fresh else f"no {', '.join(missing)} yet"
+        print(f"{why} — tailoring from scratch\n")
+        if _tailor(app_id, next_step=False):
+            return False, ["tailoring did not finish; nothing was rebuilt"]
+        print()
+    return _rebuild(folder, cfg)
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     """Rebuild one application's CV from its own cv.tex."""
     cfg = config.load()
@@ -1135,15 +1370,31 @@ def cmd_build(args: argparse.Namespace) -> int:
     return 0 if ok else 3
 
 
-def _tailor(app_id: str, model: str | None = None) -> int:
-    """Hand the tailoring to the agent and show what it did."""
+def _tailor(app_id: str, model: str | None = None, next_step: bool = True) -> int:
+    """Hand the tailoring to the agent and show what it did, as it does it.
+
+    The lines going past are the point: this takes minutes, and when it fails
+    the thing you need is where it got to, which is not in the one paragraph
+    it prints at the end.
+    """
     cfg = config.load()
-    if not (cfg.applications / app_id).is_dir():
+    folder = cfg.applications / app_id
+    if not folder.is_dir():
         print(f"no such application: {app_id}", file=sys.stderr)
+        return 1
+    # Two agents writing one cv.tex is a CV neither of them wrote. Checked
+    # here as well as at the callers because this is the command the
+    # background job itself runs — and the marker names that job's own pid, so
+    # comparing pids is what tells "someone else is on it" from "this is me".
+    run = running.current(folder)
+    if run and run.pid != os.getpid():
+        print(f"{app_id} is already being tailored (pid {run.pid})",
+              file=sys.stderr)
         return 1
     print(f"tailoring {app_id} — this takes a minute\n")
     try:
-        result = agent.tailor(app_id, config.ROOT, model or cfg.agent_model)
+        result = agent.tailor(app_id, config.ROOT, model or cfg.agent_model,
+                              on_line=lambda line: print(f"  {line}", flush=True))
     except agent.AgentMissing as exc:
         print(exc, file=sys.stderr)
         print(f"\nrun it yourself with:  /tailor {app_id}", file=sys.stderr)
@@ -1153,6 +1404,7 @@ def _tailor(app_id: str, model: str | None = None) -> int:
               file=sys.stderr)
         return 1
 
+    print()
     print(result.text or "(the agent said nothing)")
     if result.cost:
         print(f"\n${result.cost:.2f}")
@@ -1167,12 +1419,66 @@ def _tailor(app_id: str, model: str | None = None) -> int:
     if missing:
         print(f"still missing: {', '.join(missing)}")
         return 1
-    print(f"next: /apply {app_id}")
+    if next_step:
+        print(f"next: jam apply {app_id}")
     return 0
 
 
 def cmd_tailor(args: argparse.Namespace) -> int:
     return _tailor(args.app, args.model)
+
+
+def cmd_apply(args: argparse.Namespace) -> int:
+    """Bring one application to a CV that passes, then hand over the terminal.
+
+    `jam` cannot fill a form. It has no browser, and the human is the only
+    Submit point by design (D9) — so what it can do is make sure the thing
+    being applied with is built and passing before any form is opened, and
+    then put you in the session that does the rest. Printing `/apply <id>`
+    for someone to retype in another window was the whole join between the
+    two halves of this system, and a string is not a join.
+
+    Ends in `execvp` rather than a subprocess: the session wants the terminal
+    for as long as it lasts, and there is nothing for `jam` to do afterwards
+    that `jam submit` does not already do.
+    """
+    _load_env()
+    cfg = config.load()
+    folder = cfg.applications / args.app
+    if not folder.is_dir():
+        print(f"no such application: {args.app}", file=sys.stderr)
+        return 1
+    try:
+        record = json.loads((folder / "application.json").read_text())
+    except (OSError, ValueError) as exc:
+        print(f"{args.app} has no readable application.json: {exc}", file=sys.stderr)
+        return 1
+    # Applying twice to one vacancy is the mistake the inbox screen exists to
+    # prevent, and it should not be reachable from the other direction either.
+    if record.get("submitted_at"):
+        print(f"{args.app} was submitted on {str(record['submitted_at'])[:10]}",
+              file=sys.stderr)
+        return 1
+
+    record["_folder"] = folder
+    ok, lines = _ensure_cv(folder, cfg, args.app, fresh=args.fresh)
+    print("\n".join(lines))
+    record.pop("_stage", None)
+    stage, _ = _stage(record)
+    if not ok or stage != "ready":
+        print(f"\n{stage} — not ready to apply", file=sys.stderr)
+        return 3
+
+    print(f"\nready — {args.app}")
+    if args.ready:
+        return 0
+    if not agent.available():
+        print("\nthe `claude` CLI is not on PATH; open a session and run:")
+        print(f"  /apply {args.app}")
+        return 0
+    print("\nhanding over to Claude — it fills the form and stops before Submit\n")
+    os.execvp("claude", ["claude", f"/apply {args.app}"])
+    return 0  # never reached: execvp replaces this process
 
 
 def cmd_submit(args: argparse.Namespace) -> int:
@@ -1248,6 +1554,14 @@ def _triage_screen(cfg) -> int:
 
 def cmd_take(args: argparse.Namespace) -> int:
     _load_env()
+    # A link is checked for first: it is the one form of the argument that
+    # cannot also be a company name.
+    if intake.looks_like_url(args.query):
+        return _take_link(args.query, args.yes, args.paste)
+    if args.paste:
+        print("--paste is for a posting link, not a radar search",
+              file=sys.stderr)
+        return 1
     if len(args.query) >= 12 and all(c in "0123456789abcdef" for c in args.query):
         return _take(args.query, args.yes)
     try:
@@ -1481,6 +1795,14 @@ def main(argv: list[str] | None = None) -> int:
     tl.add_argument("--model", help="override the model for this run")
     tl.set_defaults(func=cmd_tailor)
 
+    ay = sub.add_parser("apply", help="build the CV if needed, then fill the form")
+    ay.add_argument("app")
+    ay.add_argument("--fresh", action="store_true",
+                    help="tailor from scratch, replacing the current cv.tex")
+    ay.add_argument("--ready", action="store_true",
+                    help="stop once the CV passes; do not open a session")
+    ay.set_defaults(func=cmd_apply)
+
     sb = sub.add_parser("submit", help="record a submission that has happened")
     sb.add_argument("app", help="application id")
     sb.add_argument("--note", help="anything worth remembering")
@@ -1491,8 +1813,11 @@ def main(argv: list[str] | None = None) -> int:
     tr.set_defaults(func=cmd_triage)
 
     tk = sub.add_parser("take", help="turn a vacancy into an application")
-    tk.add_argument("query", help="job id, or part of the company or title")
+    tk.add_argument("query", help="job id, part of the company or title, "
+                                  "or the URL of any posting")
     tk.add_argument("--yes", "-y", action="store_true")
+    tk.add_argument("--paste", action="store_true",
+                    help="for a URL: skip the fetch and paste the JD yourself")
     tk.set_defaults(func=cmd_take)
 
     ak = sub.add_parser("ask", help="answer form questions from the bank (JSON)")

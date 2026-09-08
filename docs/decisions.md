@@ -364,6 +364,145 @@ cannot have.
 The renderer stays in the tree, tested and working, for whenever the search
 turns out to be long.
 
+**D74. `jam apply <app_id>` is the join between the two halves, and it is a
+command rather than a printed string.** Decided 2026-09-08.
+
+The deterministic half ended by printing `/apply <app_id>` for someone to
+retype in a Claude session, and the skill began by assuming a CV existed.
+Nothing checked that it did. A tailoring that failed, a `cv.tex` edited after
+the last build, a two-page PDF — all of them reached a form, and the human
+attached a CV that had never passed.
+
+`jam apply` does the checking and then hands over the terminal: it tailors
+what is missing, recompiles what is there, refuses to go on unless the stage
+reads `ready`, and only then `execvp`s into the session that fills the form.
+One command reaches every stage, so the screens name it whatever an
+application is short of.
+
+What it does not do is fill the form. `jam` has no browser, and the human is
+the only Submit point (D9); adding browser tools to the headless agent would
+put both halves of that on one side of the line.
+
+**D75. A tailoring is not finished until all three files exist.** A `cv.tex`
+with no `coverage.yaml` beside it recompiles to a clean pass, and a clean
+pass is exactly what it must not report: the honest-gaps record is the half
+of an application that survives it, and `jam gaps` is built on the assumption
+that a missing record means an application nobody made, not one whose agent
+died halfway.
+
+So `cv.tex`, `coverage.yaml` and `changes.md` are checked together, and any
+of them absent re-runs the tailoring rather than the compiler.
+
+**D76. Anything that runs for minutes streams.** The agent was invoked with
+`--output-format json` and captured whole, so a tailoring was five minutes of
+silence followed by one paragraph. When it failed, that paragraph was all
+there was, and the failure had to be reproduced to be read.
+
+`stream-json` with a line per tool use costs nothing and makes the run
+legible while it happens. On the command line it goes to the terminal; from a
+screen it goes to `.tailor.log` (D77). Either way what the run was doing is
+readable while it is doing it, which a spinner never is.
+
+**D80. One agent per application, three in total.** Added 2026-09-08 after
+checking, and finding neither.
+
+Two agents writing one `cv.tex` is a CV neither of them wrote. The screens
+guarded it and `jam tailor` did not, which mattered because `jam tailor` is
+the command the background job itself runs. The marker names that job's own
+pid, so the check is "a run exists whose pid is not mine" rather than "a run
+exists" — otherwise the background job refuses itself.
+
+The total is capped at three because taking eight vacancies out of the inbox
+in one sitting is ordinary, and each is a Claude run and a LaTeX compile.
+Starting eight is a machine nobody can use and a bill nobody chose. What is
+held back is not lost: it is a folder with no CV yet, which is a stage the
+screens already show and one key already fixes. A crashed agent does not hold
+a place, because the count reaps as it reads (D77).
+
+**D79. What the screens are allowed to say and do.** Settled 2026-09-08,
+after a first attempt broke most of them.
+
+Six rules, each of which came from getting it wrong:
+
+**One command per stage.** Every screen names `jam apply <id>`, whatever the
+application is short of — it tailors what is missing, rebuilds what is stale,
+and only then opens the form. Naming a different command per stage made the
+reader work out which half of the system they were in.
+
+**One key does whatever is needed.** `b` writes the CV when there is none and
+recompiles when there is. A second key for "start over" only differed from it
+on a folder that was already finished, which is not a difference anyone can
+read off a label; the rare case is a flag on the command line, where it costs
+nothing.
+
+**A label is true in every case it can happen, not the common one.**
+"rebuild cv" was a lie in exactly the case that sends you looking for it.
+
+**The same thing gets the same word everywhere.** `open posting`, `build cv`.
+Two screens using two words for one action is two things to learn.
+
+**Nothing takes the terminal from a screen.** An action runs between two
+redraws, so it may not write to the terminal or take longer than a keystroke
+should. Anything that does goes to the background and the screen reports on
+it (D77).
+
+**A screen rebuilds from the folder, never from what an action returned.**
+The folder is the truth, and a background job changes it without going
+through the screen at all.
+
+**D78. `--allowed-tools` approves; it does not restrict.** Found 2026-09-08
+while building link intake.
+
+The intake agent is given a URL from the internet and asked what is on it, so
+it was invoked with `--allowed-tools WebFetch` and documented as having that
+and nothing else. It fetched the page with `Bash curl`. Denying `Bash` moved
+it to another tool that runs commands.
+
+What refuses is a `deny` rule passed through `--settings`, so
+`agent.NO_SIDE_EFFECTS` names the tools that execute, write or reach other
+systems, and any job that must not act is run with it.
+
+It is a list of names, so it is only as good as the list — it narrows, it is
+not a wall. The guarantee underneath it is structural: the intake agent's
+whole output is one JSON object that is parsed in `hub/intake.py`, and
+nothing it says reaches a file. The fact gate remains what a posting has to
+get past to reach a PDF.
+
+**D77. A tailoring runs in the background; a rebuild runs in place.**
+Decided 2026-09-08, replacing a first attempt that ran both in the
+foreground.
+
+One key on the application screen does whatever the folder is short of, and
+the two things it can do cost three orders of magnitude apart. Recompiling is
+seconds and writes nothing to the terminal — latexmk and `pdftotext` both
+capture their own output — so it happens between two redraws like any other
+action. Writing a CV is minutes of an agent, and waiting for it meant the
+screen went away for the whole of it: the one thing you could not do while an
+application was being tailored was look at any of the others, which is the
+reason to be on that screen at all.
+
+So it is started and let go of. Two files in the application folder carry it:
+`.tailoring` (pid and start time) and `.tailor.log` (everything it printed).
+The stage reads `tailoring…` while it runs and the screens redraw on a timer,
+so a row stops saying what was true when it opened.
+
+Three things this has to get right, each of which is a way of being stuck:
+
+- **The marker is reaped by whoever reads it, not by the child.** A process
+  that crashed is exactly the one that will not have tidied up.
+- **The worker is orphaned, not merely detached.** A child of the screen
+  becomes a zombie when it exits, and a zombie answers `os.kill(pid, 0)` — a
+  run that finished in a second read `tailoring…` until the marker went
+  stale. It is backgrounded inside a shell that then exits, so it reparents
+  onto init and its pid stops existing when it does.
+- **An old marker is dead however alive its pid looks**, because pids are
+  recycled. Thirty minutes, against an agent timeout of fifteen.
+
+The background job is `jam tailor <app_id>` — the command anyone would type,
+not a second code path that can behave differently from the one used by hand.
+`jam apply` still runs it in the foreground, because a command line is where
+waiting is the right behaviour.
+
 ---
 
 ## Master and CV versions

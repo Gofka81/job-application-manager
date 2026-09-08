@@ -214,6 +214,37 @@ class TestEveryMenuPathOpens:
     def test_each_opens_something(self, empty):
         assert len(self.run_all(empty)[1]) == 3
 
+    def test_the_menu_offers_a_link_as_well_as_the_radar(self, empty):
+        """The radar covers the boards it watches and nothing else, and until
+        now the menu offered no other way in."""
+        keys = [a.key for a in cli._menu_actions(empty)]
+        assert "link" in keys and keys.index("link") == keys.index("inbox") + 1
+
+    def test_the_link_entry_reaches_the_intake(self, empty, monkeypatch):
+        taken = []
+        monkeypatch.setattr(cli, "_ask", lambda q, default="": "https://x.com/1")
+        monkeypatch.setattr(cli, "_take_link",
+                            lambda url, **kw: taken.append((url, kw)) or 0)
+        entry = next(a for a in cli._menu_actions(empty) if a.key == "link")
+        assert entry.run() == 0
+        assert taken[0][0] == "https://x.com/1"
+        # From a screen the CV starts by itself, as it does from the inbox.
+        assert taken[0][1]["tailor"] is True
+
+    def test_an_empty_answer_goes_back_rather_than_failing(self, empty,
+                                                           monkeypatch):
+        monkeypatch.setattr(cli, "_ask", lambda q, default="": "")
+        monkeypatch.setattr(cli, "_take_link",
+                            lambda *a, **k: pytest.fail("nothing was given"))
+        assert cli._link_screen(empty) == 0
+
+    def test_something_that_is_not_a_link_says_so(self, empty, monkeypatch):
+        """Typing a company name here reaches a fetch of nothing."""
+        monkeypatch.setattr(cli, "_ask", lambda q, default="": "data idols")
+        monkeypatch.setattr(cli, "_take_link",
+                            lambda *a, **k: pytest.fail("not a link"))
+        assert cli._link_screen(empty) == 1
+
     def test_an_empty_repository_explains_itself(self, empty):
         """Rather than an empty list with no clue what to do next."""
         shown = []
@@ -251,31 +282,38 @@ class TestStage:
         return {"app_id": folder.name, "_folder": folder,
                 "submitted_at": submitted}
 
-    def test_nothing_built_yet_points_at_tailoring(self, tmp_path):
-        stage, action = cli._stage(self.record(tmp_path))
-        assert stage == "no cv" and action.startswith("/tailor")
+    def test_nothing_built_yet_says_so(self, tmp_path):
+        assert cli._stage(self.record(tmp_path))[0] == "no cv"
 
     def test_a_cv_without_coverage_is_still_tailoring(self, tmp_path):
         """The gaps record is the half that survives the application."""
-        stage, action = cli._stage(self.record(tmp_path, files=["cv.pdf"]))
-        assert stage == "no coverage" and action.startswith("/tailor")
+        assert cli._stage(self.record(tmp_path, files=["cv.pdf"]))[0] \
+            == "no coverage"
 
     def test_notes_are_part_of_a_finished_tailoring(self, tmp_path):
-        stage, action = cli._stage(
-            self.record(tmp_path, files=["cv.pdf", "coverage.yaml"]))
-        assert stage == "no notes" and action.startswith("/tailor")
+        assert cli._stage(self.record(
+            tmp_path, files=["cv.pdf", "coverage.yaml"]))[0] == "no notes"
 
     def test_everything_present_means_it_is_ready_to_fill(self, tmp_path):
-        stage, action = cli._stage(self.record(tmp_path, files=self.BUILT))
-        assert stage == "ready" and action.startswith("/apply")
+        assert cli._stage(self.record(tmp_path, files=self.BUILT))[0] == "ready"
 
     def test_a_cv_over_the_page_budget_is_not_ready(self, tmp_path, monkeypatch):
         """A file existing is not the same as it being usable. One application
         read "ready" on a two-page CV that no recruiter would ever see, because
         the stage asked whether the PDF was there and not whether it passed."""
         monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 2)
-        stage, action = cli._stage(self.record(tmp_path, files=self.BUILT))
-        assert stage == "2 pages" and action.startswith("/tailor")
+        assert cli._stage(self.record(tmp_path, files=self.BUILT))[0] == "2 pages"
+
+    def test_every_unfinished_stage_names_the_same_command(self, tmp_path,
+                                                           monkeypatch):
+        """`jam apply` reaches all of them — it tailors what is missing and
+        rebuilds what is stale before it opens anything. Naming a different
+        command per stage made the reader work out which half they were in."""
+        monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 2)
+        folders = [(), ("cv.pdf",), ("cv.pdf", "coverage.yaml"), self.BUILT]
+        wanted = "jam apply 2026-09-06--northwind--data-engineer"
+        assert {cli._stage(self.record(tmp_path, files=f))[1]
+                for f in folders} == {wanted}
 
     def test_an_unreadable_pdf_does_not_invent_a_verdict(self, tmp_path,
                                                         monkeypatch):
@@ -424,7 +462,7 @@ class TestRebuild:
 
 
 class TestApplicationScreenActions:
-    """The reason to rebuild is almost always something read on this screen."""
+    """The reason to build is almost always something read on this screen."""
 
     def screen(self, tmp_path, files=()):
         folder = tmp_path / "2026-09-06--northwind--data-engineer"
@@ -441,9 +479,54 @@ class TestApplicationScreenActions:
             cli._application_screen(record, config.load())
         return seen["detail"]
 
-    def test_rebuilding_is_always_offered(self, tmp_path):
+    def test_building_is_always_offered(self, tmp_path):
         keys = [a.key for a in self.screen(tmp_path).actions]
         assert "b" in keys
+
+    def test_the_button_works_when_there_is_nothing_to_rebuild(
+            self, tmp_path, monkeypatch):
+        """The bug: `b` called latexmk on a folder with no cv.tex, so the one
+        case that sends you looking for it — tailoring failed, the folder is
+        empty — was the one it could only report as an error."""
+        started = []
+        monkeypatch.setattr(cli.running, "start",
+                            lambda folder, app, cwd: started.append(app))
+        monkeypatch.setattr(cli, "_rebuild",
+                            lambda *a: pytest.fail("nothing to rebuild"))
+        detail = self.screen(tmp_path)          # no cv.tex
+        message = next(a for a in detail.actions if a.key == "b").run()
+        assert started == ["2026-09-06--northwind--data-engineer"]
+        assert "tailoring started" in message
+
+    def test_writing_a_cv_is_started_rather_than_waited_for(
+            self, tmp_path, monkeypatch):
+        """It takes minutes, and an action runs between two redraws. Waiting
+        for it is the screen going away for the whole of it — so the one thing
+        you could not do while tailoring was look at the other applications."""
+        monkeypatch.setattr(cli.running, "start", lambda folder, app, cwd: None)
+        monkeypatch.setattr(cli, "_tailor",
+                            lambda *a, **k: pytest.fail("not in the foreground"))
+        self.screen(tmp_path).actions[0].run()
+
+    def test_recompiling_still_happens_in_place(self, tmp_path, monkeypatch):
+        """Seconds, and latexmk and pdftotext both capture their own output.
+        Backgrounding it would put a five-second job behind a stage change."""
+        monkeypatch.setattr(cli.running, "start",
+                            lambda *a: pytest.fail("no agent needed"))
+        monkeypatch.setattr(cli, "_rebuild", lambda f, c: (True, ["cv.pdf: pass"]))
+        detail = self.screen(tmp_path, cli.TAILOR_WRITES)
+        assert "passes" in next(a for a in detail.actions if a.key == "b").run()
+
+    def test_a_second_press_does_not_start_a_second_agent(
+            self, tmp_path, monkeypatch):
+        """Two agents writing one cv.tex is a CV neither of them wrote."""
+        from datetime import datetime
+        monkeypatch.setattr(cli.running, "current",
+                            lambda folder: cli.running.Run(1, datetime.now()))
+        monkeypatch.setattr(cli.running, "start",
+                            lambda *a: pytest.fail("one is already running"))
+        detail = self.screen(tmp_path)
+        assert "already tailoring" in detail.actions[0].run()
 
     def test_the_cv_can_only_be_viewed_once_it_exists(self, tmp_path):
         assert "v" not in [a.key for a in self.screen(tmp_path).actions]
@@ -455,17 +538,19 @@ class TestApplicationScreenActions:
         """Otherwise the page count on screen is the one from before the fix."""
         monkeypatch.setattr(cli, "_rebuild",
                             lambda folder, cfg: (True, ["cv.pdf: pass"]))
-        detail = self.screen(tmp_path, ["cv.pdf"])
+        detail = self.screen(tmp_path, cli.TAILOR_WRITES + ("cv.pdf",))
         rebuild = next(a for a in detail.actions if a.key == "b")
-        message = rebuild.run()
-        assert "passes" in message
-        assert any("cv.pdf: pass" in line for line in said(detail.lines))
+        assert "passes" in rebuild.run()
+        # The screen rebuilds itself from the folder every tick rather than
+        # from whatever the action last returned.
+        detail.refresh()
+        assert any("stage" in line for line in said(detail.lines))
 
     def test_a_failed_rebuild_says_so_rather_than_reporting_success(
             self, tmp_path, monkeypatch):
         monkeypatch.setattr(cli, "_rebuild",
                             lambda folder, cfg: (False, ["cv.pdf: FAIL"]))
-        detail = self.screen(tmp_path, ["cv.pdf"])
+        detail = self.screen(tmp_path, cli.TAILOR_WRITES + ("cv.pdf",))
         rebuild = next(a for a in detail.actions if a.key == "b")
         assert "does not pass" in rebuild.run()
 
@@ -729,7 +814,7 @@ requirements:
 
     def test_it_names_the_command_that_moves_it_on(self, tmp_path):
         note = cli._application_note(self.record(tmp_path))
-        assert "no cv" in note and "/tailor" in note
+        assert "no cv" in note and "jam apply" in note
 
     def test_it_says_what_coverage_is_short_of(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 1)
@@ -770,3 +855,353 @@ class TestTheTwoDetailScreensAreLaidOutTheSame:
         pieces = cli._section("checks")
         assert [role for _, role in pieces] == ["rule", "name", "rule"]
         assert "checks" in "".join(t for t, _ in pieces)
+
+
+class TestGettingToACv:
+    """`_ensure_cv` is the one step both the screen's button and `jam apply`
+    go through, so that "make this application ready" means the same thing
+    from either side."""
+
+    @pytest.fixture
+    def folder(self, tmp_path):
+        app = tmp_path / "2026-09-06--northwind--data-engineer"
+        app.mkdir()
+        return app
+
+    @pytest.fixture
+    def cfg(self):
+        from hub import config
+        return config.load()
+
+    def test_an_empty_folder_is_tailored_rather_than_compiled(
+            self, folder, cfg, monkeypatch):
+        ran = []
+        monkeypatch.setattr(cli, "_tailor", lambda app, **k: ran.append(app) or 0)
+        monkeypatch.setattr(cli, "_rebuild", lambda f, c: (True, ["ok"]))
+        cli._ensure_cv(folder, cfg, folder.name)
+        assert ran == [folder.name]
+
+    @pytest.mark.parametrize("absent", cli.TAILOR_WRITES)
+    def test_anything_a_tailoring_writes_being_absent_means_it_did_not_finish(
+            self, folder, cfg, monkeypatch, absent):
+        """A cv.tex with no coverage.yaml beside it is a CV nobody can say is
+        honest, and recompiling it would report a clean pass."""
+        for name in cli.TAILOR_WRITES:
+            if name != absent:
+                (folder / name).write_text("x")
+        ran = []
+        monkeypatch.setattr(cli, "_tailor", lambda app, **k: ran.append(app) or 0)
+        monkeypatch.setattr(cli, "_rebuild", lambda f, c: (True, ["ok"]))
+        cli._ensure_cv(folder, cfg, folder.name)
+        assert ran == [folder.name]
+
+    def test_a_finished_folder_is_only_compiled(self, folder, cfg, monkeypatch):
+        """Re-tailoring a CV someone has been editing throws the edits away."""
+        for name in cli.TAILOR_WRITES:
+            (folder / name).write_text("x")
+        monkeypatch.setattr(cli, "_tailor",
+                            lambda *a, **k: pytest.fail("should not tailor"))
+        monkeypatch.setattr(cli, "_rebuild", lambda f, c: (True, ["ok"]))
+        assert cli._ensure_cv(folder, cfg, folder.name)[0]
+
+    def test_what_the_agent_wrote_is_rebuilt_rather_than_trusted(
+            self, folder, cfg, monkeypatch):
+        """The agent reports what it wrote. What has to be true is that the
+        PDF on disk came from the cv.tex on disk and still passes, and only
+        recompiling establishes that."""
+        monkeypatch.setattr(cli, "_tailor", lambda app, **k: 0)
+        monkeypatch.setattr(cli, "_rebuild", lambda f, c: (False, ["2 pages"]))
+        ok, lines = cli._ensure_cv(folder, cfg, folder.name)
+        assert ok is False and lines == ["2 pages"]
+
+    def test_a_failed_tailoring_does_not_go_on_to_compile(
+            self, folder, cfg, monkeypatch):
+        """latexmk on a folder the agent never wrote to reports a missing
+        cv.tex, which buries the reason the agent stopped."""
+        monkeypatch.setattr(cli, "_tailor", lambda app, **k: 1)
+        monkeypatch.setattr(cli, "_rebuild",
+                            lambda *a: pytest.fail("nothing to build"))
+        ok, lines = cli._ensure_cv(folder, cfg, folder.name)
+        assert ok is False and any("did not finish" in line for line in lines)
+
+
+class TestApplyFromTheCommandLine:
+    """`jam apply` is the join between the deterministic half and the session
+    that fills the form. It used to be a string printed for someone to
+    retype in another window."""
+
+    def app(self, tmp_path, **over):
+        import json
+        folder = tmp_path / "applications" / "2026-09-06--northwind--data-engineer"
+        folder.mkdir(parents=True)
+        (folder / "application.json").write_text(json.dumps(
+            {"app_id": folder.name, "company": "Northwind",
+             "submitted_at": None, **over}))
+        return folder
+
+    def args(self, folder, **over):
+        import argparse
+        return argparse.Namespace(**{"app": folder.name, "fresh": False,
+                                     "ready": True, **over})
+
+    def ready(self, monkeypatch, stage="ready", ok=True):
+        monkeypatch.setattr(cli, "_ensure_cv", lambda *a, **k: (ok, ["cv.pdf: pass"]))
+        monkeypatch.setattr(cli, "_work_out_stage", lambda r: (stage, ""))
+
+    def use(self, monkeypatch, folder):
+        from hub import config
+        cfg = dataclasses.replace(config.load(),
+                                  applications_override=folder.parent)
+        monkeypatch.setattr(cli.config, "load", lambda: cfg)
+        monkeypatch.setattr(cli, "_load_env", lambda: None)
+
+    def test_an_unknown_application_is_not_an_empty_success(
+            self, tmp_path, monkeypatch):
+        folder = self.app(tmp_path)
+        self.use(monkeypatch, folder)
+        import argparse
+        assert cli.cmd_apply(argparse.Namespace(
+            app="nope", fresh=False, ready=True)) == 1
+
+    def test_it_refuses_an_application_already_submitted(
+            self, tmp_path, monkeypatch):
+        """Applying twice to one vacancy is the mistake the inbox screen
+        exists to prevent, and the other direction should not reopen it."""
+        folder = self.app(tmp_path, submitted_at="2026-09-01T10:00:00")
+        self.use(monkeypatch, folder)
+        self.ready(monkeypatch)
+        assert cli.cmd_apply(self.args(folder)) == 1
+
+    def test_a_cv_that_does_not_pass_stops_before_any_form(
+            self, tmp_path, monkeypatch):
+        """The point of the command is that the thing being applied with was
+        built and checked first."""
+        folder = self.app(tmp_path)
+        self.use(monkeypatch, folder)
+        self.ready(monkeypatch, stage="2 pages", ok=False)
+        assert cli.cmd_apply(self.args(folder)) == 3
+
+    def test_a_stage_short_of_ready_stops_even_when_the_build_passed(
+            self, tmp_path, monkeypatch):
+        """A PDF that compiles and passes is still not an application: the
+        coverage record and the notes are what `jam gaps` reads later."""
+        folder = self.app(tmp_path)
+        self.use(monkeypatch, folder)
+        self.ready(monkeypatch, stage="no coverage")
+        assert cli.cmd_apply(self.args(folder)) == 3
+
+    def test_ready_stops_without_opening_a_session(self, tmp_path, monkeypatch):
+        folder = self.app(tmp_path)
+        self.use(monkeypatch, folder)
+        self.ready(monkeypatch)
+        monkeypatch.setattr(cli.os, "execvp",
+                            lambda *a: pytest.fail("should not hand over"))
+        assert cli.cmd_apply(self.args(folder)) == 0
+
+    def test_otherwise_it_hands_the_terminal_to_the_skill(
+            self, tmp_path, monkeypatch):
+        folder = self.app(tmp_path)
+        self.use(monkeypatch, folder)
+        self.ready(monkeypatch)
+        monkeypatch.setattr(cli.agent, "available", lambda: True)
+        handed = []
+        monkeypatch.setattr(cli.os, "execvp",
+                            lambda f, argv: handed.append((f, argv)))
+        cli.cmd_apply(self.args(folder, ready=False))
+        assert handed == [("claude", ["claude", f"/apply {folder.name}"])]
+
+    def test_without_the_cli_it_says_what_to_run_by_hand(
+            self, tmp_path, monkeypatch, capsys):
+        folder = self.app(tmp_path)
+        self.use(monkeypatch, folder)
+        self.ready(monkeypatch)
+        monkeypatch.setattr(cli.agent, "available", lambda: False)
+        monkeypatch.setattr(cli.os, "execvp",
+                            lambda *a: pytest.fail("nothing to hand over to"))
+        assert cli.cmd_apply(self.args(folder, ready=False)) == 0
+        assert f"/apply {folder.name}" in capsys.readouterr().out
+
+
+class TestTakingAVacancyStartsItsCv:
+    """Press create-application and the CV is already being written. It used
+    to be queued and run once the screens closed, so taking three vacancies
+    bought three tailorings back to back with nothing else possible."""
+
+    def taken(self, tmp_path, monkeypatch, no_tailor=False):
+        import argparse
+        from hub import config
+        cfg = dataclasses.replace(config.load(), applications_override=tmp_path)
+        monkeypatch.setattr(cli.config, "load", lambda: cfg)
+        monkeypatch.setattr(cli, "_load_env", lambda: None)
+        monkeypatch.setattr(cli.picker, "usable", lambda: True)
+        monkeypatch.setattr(cli.inbox_mod, "fetch_all", lambda q=None: [job()])
+        monkeypatch.setattr(cli.inbox_mod, "truncated", lambda jobs: False)
+        monkeypatch.setattr(cli, "_remembered_sort", lambda: "score")
+        started = []
+        monkeypatch.setattr(cli.running, "start",
+                            lambda folder, app, cwd: started.append(app))
+        monkeypatch.setattr(cli, "_tailor",
+                            lambda *a, **k: pytest.fail("not in the foreground"))
+
+        # One vacancy taken, then the picker backs out.
+        seen = {"n": 0}
+
+        def pick(rows, *a):
+            seen["n"] += 1
+            return rows[0] if seen["n"] == 1 and rows else None
+        monkeypatch.setattr(cli, "_pick", pick)
+        monkeypatch.setattr(cli, "_vacancy_screen",
+                            lambda job_id, on_taken=None:
+                            on_taken(job_id, "2026-09-06--northwind--data-engineer"))
+        cli.cmd_inbox(argparse.Namespace(
+            plain=False, q=None, min_score=0.0, max_age=None, top=20,
+            all=True, why=False, yes=False, no_tailor=no_tailor))
+        return started
+
+    def test_the_cv_starts_the_moment_the_vacancy_is_taken(self, tmp_path,
+                                                           monkeypatch):
+        assert self.taken(tmp_path, monkeypatch) == [
+            "2026-09-06--northwind--data-engineer"]
+
+    def test_nothing_waits_for_the_screens_to_close(self, tmp_path,
+                                                    monkeypatch):
+        """`_tailor` failing the test is the assertion: the foreground path
+        must not be reached from a screen at all."""
+        self.taken(tmp_path, monkeypatch)
+
+    def test_no_tailor_still_only_takes_it(self, tmp_path, monkeypatch):
+        assert self.taken(tmp_path, monkeypatch, no_tailor=True) == []
+
+
+class TestTakingALink:
+    """B1.3. Everything else starts at the radar's list, which covers the
+    boards it watches and nothing else — a posting someone sends you had no
+    way in at all."""
+
+    def args(self, query, **over):
+        import argparse
+        return argparse.Namespace(**{"query": query, "yes": True,
+                                     "paste": False, **over})
+
+    def use(self, monkeypatch, tmp_path):
+        from hub import config
+        cfg = dataclasses.replace(config.load(), applications_override=tmp_path)
+        monkeypatch.setattr(cli.config, "load", lambda: cfg)
+        monkeypatch.setattr(cli, "_load_env", lambda: None)
+        monkeypatch.setattr(cli.inbox_mod, "fetch_all",
+                            lambda *a: pytest.fail("the radar has never seen it"))
+        return cfg
+
+    def read(self, monkeypatch, **over):
+        row = {"company": "Northwind", "title": "Data Engineer",
+               "url": "https://jobs.lever.co/acme/1", "source": "lever",
+               "location": "London", "description": "5+ years of Python.",
+               "jd_full": True, "score": None, "job_id": None,
+               "posted_at": None, **over}
+        monkeypatch.setattr(cli.intake, "from_url", lambda *a, **k: row)
+        return row
+
+    def test_a_link_never_reaches_the_radar_search(self, tmp_path, monkeypatch):
+        """`jam take <url>` used to go looking for a company called
+        "https://…" and report that nothing matched."""
+        self.use(monkeypatch, tmp_path)
+        self.read(monkeypatch)
+        assert cli.cmd_take(self.args("https://jobs.lever.co/acme/1")) == 0
+
+    def test_the_folder_says_it_did_not_come_from_the_radar(self, tmp_path,
+                                                            monkeypatch):
+        """A funnel counted later has to be able to tell the two apart."""
+        self.use(monkeypatch, tmp_path)
+        self.read(monkeypatch)
+        cli.cmd_take(self.args("https://jobs.lever.co/acme/1"))
+        import json
+        written = json.loads(
+            next(tmp_path.glob("*/application.json")).read_text())
+        assert written["discovery"] == "link"
+        assert written["radar_job_id"] is None and written["score_source"] is None
+
+    def test_the_jd_is_written_beside_it(self, tmp_path, monkeypatch):
+        self.use(monkeypatch, tmp_path)
+        self.read(monkeypatch)
+        cli.cmd_take(self.args("https://jobs.lever.co/acme/1"))
+        assert "5+ years of Python." in next(tmp_path.glob("*/jd.md")).read_text()
+
+    def test_a_page_that_cannot_be_read_falls_back_to_pasting(
+            self, tmp_path, monkeypatch):
+        """Boards behind a login are common enough that the fallback is part
+        of the design rather than an error path."""
+        self.use(monkeypatch, tmp_path)
+
+        def refuse(*a, **k):
+            raise cli.intake.IntakeError("a login wall")
+        monkeypatch.setattr(cli.intake, "from_url", refuse)
+        answers = iter(["Northwind", "Data Engineer", ""])
+        monkeypatch.setattr(cli, "_ask", lambda q, default="": next(answers))
+        monkeypatch.setattr(cli, "_paste_jd", lambda: "5+ years of Python.")
+        assert cli.cmd_take(self.args("https://jobs.lever.co/acme/1")) == 0
+        assert next(tmp_path.glob("*/application.json")).exists()
+
+    def test_nothing_is_created_without_a_company_and_a_title(
+            self, tmp_path, monkeypatch):
+        """They are the folder's name. A blank one would collide with the next
+        blank one."""
+        self.use(monkeypatch, tmp_path)
+        monkeypatch.setattr(cli.intake, "from_url",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                cli.intake.IntakeError("a login wall")))
+        monkeypatch.setattr(cli, "_ask", lambda q, default="": "")
+        monkeypatch.setattr(cli, "_paste_jd", lambda: "text")
+        assert cli.cmd_take(self.args("https://jobs.lever.co/acme/1")) == 1
+        assert list(tmp_path.glob("*/application.json")) == []
+
+    def test_paste_skips_the_fetch_entirely(self, tmp_path, monkeypatch):
+        self.use(monkeypatch, tmp_path)
+        monkeypatch.setattr(cli.intake, "from_url",
+                            lambda *a, **k: pytest.fail("--paste means paste"))
+        answers = iter(["Northwind", "Data Engineer", ""])
+        monkeypatch.setattr(cli, "_ask", lambda q, default="": next(answers))
+        monkeypatch.setattr(cli, "_paste_jd", lambda: "5+ years of Python.")
+        assert cli.cmd_take(self.args("https://jobs.lever.co/acme/1",
+                                      paste=True)) == 0
+
+    def test_paste_on_a_radar_search_is_refused_rather_than_ignored(self):
+        assert cli.cmd_take(self.args("data idols", paste=True)) == 1
+
+
+class TestOneAgentPerApplication:
+    """Two agents writing one cv.tex is a CV neither of them wrote."""
+
+    def app(self, tmp_path, monkeypatch):
+        import dataclasses as dc
+        from hub import config
+        folder = tmp_path / "2026-09-06--northwind--data-engineer"
+        folder.mkdir(parents=True)
+        cfg = dc.replace(config.load(), applications_override=tmp_path)
+        monkeypatch.setattr(cli.config, "load", lambda: cfg)
+        return folder
+
+    def test_it_refuses_while_another_process_has_it(self, tmp_path,
+                                                     monkeypatch):
+        from datetime import datetime
+        folder = self.app(tmp_path, monkeypatch)
+        monkeypatch.setattr(cli.running, "current",
+                            lambda f: cli.running.Run(999_999, datetime.now()))
+        monkeypatch.setattr(cli.agent, "tailor",
+                            lambda *a, **k: pytest.fail("one is already on it"))
+        assert cli._tailor(folder.name) == 1
+
+    def test_the_background_job_does_not_refuse_itself(self, tmp_path,
+                                                       monkeypatch):
+        """`running.start` spawns this very command and the marker names its
+        pid, so comparing pids is what tells "someone else is on it" from
+        "this is me"."""
+        import os
+        from datetime import datetime
+        folder = self.app(tmp_path, monkeypatch)
+        monkeypatch.setattr(cli.running, "current",
+                            lambda f: cli.running.Run(os.getpid(), datetime.now()))
+        ran = []
+        monkeypatch.setattr(cli.agent, "tailor", lambda *a, **k: (
+            ran.append(1) or cli.agent.Result(True, "done")))
+        cli._tailor(folder.name)
+        assert ran == [1]

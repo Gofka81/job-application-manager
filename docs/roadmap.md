@@ -70,11 +70,14 @@ The main block. Until it works, nothing else has anything to stand on.
       `jd.md` snapshot
 - [x] **B1.2** `M` Intake, branch A — link from INBOX: JD and score already
       exist
-- [ ] **B1.3** `M` Intake, branch B — arbitrary link: the agent reads the
-      page; fallback is pasting the text
+- [x] **B1.3** `M` Intake, branch B — arbitrary link: `jam take <url>`. The
+      agent reads the page with the acting tools denied (D78); `--paste`, and
+      any page it cannot read, falls back to typing the company and title and
+      pasting the JD. `discovery=link`, and the radar's fields stay empty
 - [x] **B1.4** `S` Dedup against already-submitted, plus company context
-- [ ] **B1.5** `S` Off-radar triage with the same bounded prompt,
-      `score_source`
+- [-] **B1.5** `S` Off-radar triage — dropped. A link is taken because the
+      decision to apply is already made, so a score changes nothing. The
+      empty `score_source` is what says a vacancy was never scored
 - [x] **B1.6** `L` **Fact gate** — port `verify-cv-facts.mjs` to Python. The
       `regex` package instead of `re`. Tests and golden fixtures from the
       original. *The riskiest piece of the block*

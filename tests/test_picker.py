@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import curses
 from dataclasses import dataclass
+from unittest.mock import patch
+
+import pytest
 
 from hub import picker
 
@@ -765,3 +768,84 @@ class TestTheReasonUnderTheListIsNamed:
         list to say something the reader already knew."""
         pieces = self.screen("a very long label indeed").detail_rule(10)
         assert "\n" not in "".join(t for t, _ in pieces)
+
+
+class TestARedrawTick:
+    """A screen showing something that is still happening has to be able to
+    change without being touched. Without a timeout, curses blocks on the next
+    keypress and a row keeps saying what was true when the screen opened."""
+
+    class FakeScreen:
+        """getch returns -1 the way a timed-out curses screen does."""
+
+        def __init__(self, keys):
+            self.keys = list(keys)
+            self.timeouts = []
+
+        def getch(self):
+            return self.keys.pop(0) if self.keys else 27
+
+        def timeout(self, ms):
+            self.timeouts.append(ms)
+
+        def nodelay(self, on):
+            pass
+
+        def erase(self):
+            pass
+
+        def refresh(self):
+            pass
+
+        def addstr(self, *a):
+            pass
+
+        def getmaxyx(self):
+            return 24, 80
+
+    def loop(self, screen, thing):
+        """Run one screen's loop without a terminal under it."""
+        with patch.object(picker, "start_colours", lambda: None), \
+                patch.object(curses, "curs_set", lambda n: None), \
+                patch.object(type(thing), "_draw", lambda self, s: None):
+            thing._loop(screen)
+
+    def test_a_tick_redraws_instead_of_being_read_as_a_key(self):
+        """-1 is not a keystroke. Passing it on would run it through every
+        binding on the screen."""
+        seen = []
+        d = picker.Detail("t", ["x"], refresh=lambda: seen.append(1),
+                          refresh_ms=700)
+        self.loop(self.FakeScreen([-1, -1, 27]), d)
+        assert len(seen) == 3        # two ticks and the draw before the escape
+
+    def test_the_timeout_is_reapplied_every_time(self):
+        """`read_key` restores blocking mode after decoding an escape
+        sequence, which cancels a timeout set once at the top."""
+        screen = self.FakeScreen([-1, -1, 27])
+        self.loop(screen, picker.Detail("t", ["x"], refresh_ms=700))
+        assert screen.timeouts == [700, 700, 700]
+
+    def test_a_screen_with_nothing_live_still_blocks(self):
+        """Waking a screen that cannot change is a redraw nobody asked for."""
+        screen = self.FakeScreen([27])
+        self.loop(screen, picker.Detail("t", ["x"]))
+        assert screen.timeouts == [-1]
+
+    def test_the_refresh_runs_before_the_draw_not_after(self):
+        """Otherwise every screen is one tick behind what it is reporting."""
+        order = []
+        d = picker.Detail("t", ["x"], refresh=lambda: order.append("refresh"),
+                          refresh_ms=700)
+        with patch.object(picker, "start_colours", lambda: None), \
+                patch.object(curses, "curs_set", lambda n: None), \
+                patch.object(picker.Detail, "_draw",
+                             lambda self, s: order.append("draw")):
+            d._loop(self.FakeScreen([27]))
+        assert order[:2] == ["refresh", "draw"]
+
+    def test_a_list_ticks_the_same_way(self):
+        screen = self.FakeScreen([-1, 27])
+        self.loop(screen, picker.Picker(
+            [{"n": 1}], [picker.Column("n", 4, lambda r: "1")], refresh_ms=700))
+        assert screen.timeouts == [700, 700]

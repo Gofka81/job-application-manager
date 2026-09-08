@@ -65,10 +65,22 @@ to the design stage of each block.
 
 ## Applying to a vacancy
 
-Ask Claude Code to tailor an application, or invoke `/tailor`. The skill in
-`.claude/skills/tailor/` reads the job description, records what it asks for
-against the master profile, writes the tailoring plan, and renders through the
-gates. It writes decisions; `jam` writes the PDF.
+`jam apply <app_id>` is the whole of it. It tailors what the folder is short
+of, recompiles what is there, refuses to go on unless the CV passes its
+checks, and then hands the terminal to a Claude session that fills the form
+and stops before Submit (D74). The skill in `.claude/skills/tailor/` reads the
+job description, records what it asks for against the master profile, writes
+the tailoring plan, and renders through the gates. It writes decisions; `jam`
+writes the PDF.
+
+Either half is still reachable alone — `jam tailor <app_id>` to write the CV
+without opening anything, `jam apply <app_id> --ready` to stop once it passes,
+`--fresh` to start the tailoring over.
+
+From the screens it is one key. `b` on an application builds whatever it is
+short of: a recompile happens in place, and a tailoring is started in the
+background and reported on, so the screen stays yours while it runs and you
+can start another (D77).
 
 The CV itself is still produced by the standalone `tailor-cv` skill, which
 works; this repository checks the result rather than replacing it (D73).
@@ -79,7 +91,9 @@ in its own right.
 ```sh
 jam                                         # menu: arrow keys all the way down
 jam inbox                                   # what job-radar found, arrow keys to pick
-jam take "data idols"                       # turn a vacancy into an application
+jam take "data idols"                       # turn a radar vacancy into an application
+jam take https://jobs.lever.co/acme/1       # ...or any posting link (--paste if it needs a login)
+jam apply <app_id>                          # build the CV if needed, then fill the form
 jam build <app_id>                          # rebuild that application's CV and check it
 jam check ~/CV/applications --max-pages 1   # check finished PDFs against the master
 jam ask "Years of SQL?" --type integer      # answer a form question from the bank

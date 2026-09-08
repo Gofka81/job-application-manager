@@ -5,11 +5,30 @@ description: Fill a job application form in the browser from the answer bank, st
 
 # Fill the form
 
-The CV exists in `data/applications/<app_id>/` and the vacancy has a posting
-URL in `application.json`. You fill what is known, ask about what is not, and
-**stop**. The human uploads the CV and presses Submit.
+You fill what is known, ask about what is not, and **stop**. The human uploads
+the CV and presses Submit.
 
 Load the `claude-in-chrome` skill first; this needs the browser tools.
+
+## Which application
+
+`jam apply <app_id>` is what normally starts this, and it has already built
+the CV and checked that it passes — that is what the command is for. The
+app_id it hands over is the one to work on.
+
+If you were invoked without one, do not guess. Run `jam` and look, or ask.
+Filling a form against the wrong folder attaches the wrong CV.
+
+If you were invoked with one but reached here some other way, check before
+opening anything:
+
+```
+jam apply <app_id> --ready
+```
+
+It builds whatever is missing and stops without opening a session. A non-zero
+exit means the CV is not ready and no form should be opened yet — it says
+which stage it is short of.
 
 ## The line you do not cross
 

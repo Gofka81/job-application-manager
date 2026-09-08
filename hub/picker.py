@@ -205,8 +205,15 @@ class Picker:
                  keys: dict[int, tuple[str, Callable[["Picker"], str]]] | None = None,
                  gate: Callable[[object], bool] | None = None,
                  filters: Sequence[Filter] | None = None,
-                 extra_label: Callable[["Picker"], str] | None = None):
+                 extra_label: Callable[["Picker"], str] | None = None,
+                 refresh: Callable[[], None] | None = None,
+                 refresh_ms: int | None = None):
         self.all = list(rows)
+        # A list whose rows can change while nobody is typing — something is
+        # running, and its row has to stop saying what was true when the
+        # screen opened.
+        self.refresh = refresh
+        self.refresh_ms = refresh_ms
         # Cycled with left/right. A filter the caller wants reachable without
         # leaving the screen and rerunning the command with a flag.
         # Typing filters what is on screen. Some of what you want to search is
@@ -304,8 +311,16 @@ class Picker:
         curses.curs_set(0)
         start_colours()
         while True:
+            if self.refresh:
+                self.refresh()
             self._draw(screen)
-            result = self._key(self.read_key(screen))
+            # Re-applied every time: `read_key` restores blocking mode after
+            # decoding an escape sequence, which cancels it.
+            screen.timeout(self.refresh_ms or -1)
+            key = self.read_key(screen)
+            if key == -1:                       # a redraw tick, not a keypress
+                continue
+            result = self._key(key)
             if result is not False:
                 return result
 
@@ -659,6 +674,10 @@ class Act:
 
     `closes` ends the screen after the action ran. An action that removes the
     record it was invoked from has nothing left to show.
+
+    Every action runs between two redraws, so none of them may write to the
+    terminal or take longer than a keystroke should. Anything that does
+    belongs in the background, where the screen can report on it instead.
     """
     key: str
     label: str
@@ -676,7 +695,9 @@ class Detail:
     """
 
     def __init__(self, title: str, lines: Sequence,
-                 actions: Sequence[Act] = (), subtitle: str = ""):
+                 actions: Sequence[Act] = (), subtitle: str = "",
+                 refresh: Callable[[], None] | None = None,
+                 refresh_ms: int | None = None):
         self.title = title
         self.subtitle = subtitle
         self.lines = list(lines)
@@ -684,6 +705,10 @@ class Detail:
         self.top = 0
         self.message = ""
         self.pending: Act | None = None
+        # A screen showing something that is still happening has to be able to
+        # change without being touched.
+        self.refresh = refresh
+        self.refresh_ms = refresh_ms
 
     def run(self) -> None:
         curses.wrapper(self._loop)
@@ -692,8 +717,14 @@ class Detail:
         curses.curs_set(0)
         start_colours()
         while True:
+            if self.refresh:
+                self.refresh()
             self._draw(screen)
-            if self._key(Picker.read_key(screen)) is None:
+            screen.timeout(self.refresh_ms or -1)
+            key = Picker.read_key(screen)
+            if key == -1:
+                continue
+            if self._key(key, screen) is None:
                 return
 
     def rows(self, width: int) -> list[list[tuple[str, str]]]:
@@ -759,7 +790,7 @@ class Detail:
                 x += len(text)
         screen.refresh()
 
-    def _key(self, key):
+    def _key(self, key, screen=None):
         """None ends the screen; anything else keeps it open."""
         height = 20
         if self.pending:
