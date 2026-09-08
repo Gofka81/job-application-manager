@@ -14,6 +14,16 @@ import pytest
 from hub import cli, inbox, picker
 
 
+def said(lines) -> list[str]:
+    """What a screen's lines say, whatever they are made of.
+
+    A line is either prose or a list of (text, role) pieces, and a test asking
+    what the screen says should not have to know which.
+    """
+    return ["".join(t for t, _ in line) if isinstance(line, list) else line
+            for line in lines]
+
+
 def job(**over):
     base = {"job_id": "a" * 16, "company": "Northwind", "title": "Data Engineer",
             "url": "https://example.com/1", "source": "linkedin",
@@ -308,26 +318,27 @@ requirements:
     def test_it_says_how_far_over_the_budget_the_cv_runs(self, tmp_path,
                                                          monkeypatch):
         monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 3)
-        lines = cli._detail_checks(self.folder(tmp_path))
+        lines = said(cli._detail_checks(self.folder(tmp_path)))
         assert any("3 (over 1)" in line for line in lines)
 
     def test_a_cv_inside_the_budget_carries_no_verdict(self, tmp_path,
                                                        monkeypatch):
         monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 1)
-        lines = cli._detail_checks(self.folder(tmp_path))
-        assert any(line.strip() == "pages      1" for line in lines)
+        lines = said(cli._detail_checks(self.folder(tmp_path)))
+        pages = next(l for l in lines if l.strip().startswith("pages"))
+        assert pages.split() == ["pages", "1"]
 
     def test_it_counts_coverage_and_names_what_is_missing(self, tmp_path,
                                                           monkeypatch):
         monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 1)
-        lines = cli._detail_checks(self.folder(tmp_path, self.DOC))
+        lines = said(cli._detail_checks(self.folder(tmp_path, self.DOC)))
         assert any("required 1/2 (50%)" in line for line in lines)
         assert any("missing  Kafka" in line for line in lines)
 
     def test_a_damaged_coverage_file_does_not_take_the_screen_down(
             self, tmp_path, monkeypatch):
         monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 1)
-        lines = cli._detail_checks(self.folder(tmp_path, "requirements: 7"))
+        lines = said(cli._detail_checks(self.folder(tmp_path, "requirements: 7")))
         assert any("unreadable" in line for line in lines)
 
     def test_nothing_built_yet_adds_nothing(self, tmp_path):
@@ -448,7 +459,7 @@ class TestApplicationScreenActions:
         rebuild = next(a for a in detail.actions if a.key == "b")
         message = rebuild.run()
         assert "passes" in message
-        assert any("cv.pdf: pass" in line for line in detail.lines)
+        assert any("cv.pdf: pass" in line for line in said(detail.lines))
 
     def test_a_failed_rebuild_says_so_rather_than_reporting_success(
             self, tmp_path, monkeypatch):
@@ -626,3 +637,136 @@ class TestTrafficLightsMatchTheRadar:
 
     def test_no_date_is_not_a_judgement_either(self):
         assert cli._age_role(job()) == "none"
+
+
+class TestWhatAStageIsAskingFor:
+    """The stage column holds one word. Its colour says what kind of word it
+    is, so a list of ten applications answers "what needs me" without being
+    read one row at a time."""
+
+    def record(self, tmp_path, **over):
+        folder = tmp_path / "2026-09-06--northwind--data-engineer"
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in over.pop("files", ()):
+            (folder / name).write_text("x")
+        return {"app_id": folder.name, "_folder": folder, **over}
+
+    BUILT = ["cv.pdf", "coverage.yaml", "changes.md"]
+
+    def test_ready_to_send_is_the_green_one(self, tmp_path):
+        assert cli._stage_role(self.record(tmp_path, files=self.BUILT)) == "good"
+
+    def test_work_not_done_yet_is_amber(self, tmp_path):
+        """Nothing has failed: a step has not been run."""
+        assert cli._stage_role(self.record(tmp_path)) == "fair"
+
+    def test_a_check_that_ran_and_failed_is_red(self, tmp_path, monkeypatch):
+        """Different from work outstanding — the CV exists, it is just too
+        long to send, and no further tailoring step is missing."""
+        monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 2)
+        assert cli._stage_role(self.record(tmp_path, files=self.BUILT)) == "poor"
+
+    def test_a_sent_application_is_not_asking_for_anything(self, tmp_path):
+        record = self.record(tmp_path, files=self.BUILT,
+                             submitted_at="2026-09-06T10:00:00+00:00")
+        assert cli._stage_role(record) == "none"
+
+    def test_the_radar_s_score_keeps_its_own_bands(self, tmp_path):
+        """The inbox row and the application it became are the same number and
+        the same verdict."""
+        assert cli._score_role(9.0) == "good" and cli._score_role(4.0) == "poor"
+        assert cli._score_role(None) == "none"
+
+
+class TestTheStageIsWorkedOutOnce:
+    """Two columns, a colour and a subtitle ask for it, and answering means
+    opening the PDF to count its pages."""
+
+    def record(self, tmp_path):
+        folder = tmp_path / "2026-09-06--northwind--data-engineer"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "cv.pdf").write_text("x")
+        return {"app_id": folder.name, "_folder": folder, "submitted_at": None}
+
+    def test_the_pdf_is_not_reopened_for_every_ask(self, tmp_path, monkeypatch):
+        counted = []
+        monkeypatch.setattr(cli.atscheck, "page_count",
+                            lambda pdf: counted.append(pdf) or 1)
+        record = self.record(tmp_path)
+        for _ in range(5):
+            cli._stage(record)
+        assert len(counted) <= 1
+
+    def test_a_rebuild_asks_again(self, tmp_path, monkeypatch):
+        """The stage is read off the folder, and a rebuild changes it."""
+        monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 2)
+        record = self.record(tmp_path)
+        assert cli._stage(record)[0] == "2 pages"
+        monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 1)
+        record.pop("_stage", None)
+        assert cli._stage(record)[0] != "2 pages"
+
+
+class TestWhereItStands:
+    """The stage column has room for a verdict and none for the number behind
+    it, and a verdict alone sends you to another command to find out what it
+    meant."""
+
+    def record(self, tmp_path, **over):
+        folder = tmp_path / "2026-09-06--northwind--data-engineer"
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in over.pop("files", ()):
+            (folder / name).write_text("x")
+        if (doc := over.pop("coverage", None)):
+            (folder / "coverage.yaml").write_text(doc)
+        return {"app_id": folder.name, "_folder": folder, **over}
+
+    DOC = """
+requirements:
+  - {text: Kafka, weight: required, status: missing}
+  - {text: dbt, weight: required, status: covered}
+"""
+
+    def test_it_names_the_command_that_moves_it_on(self, tmp_path):
+        note = cli._application_note(self.record(tmp_path))
+        assert "no cv" in note and "/tailor" in note
+
+    def test_it_says_what_coverage_is_short_of(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli.atscheck, "page_count", lambda pdf: 1)
+        note = cli._application_note(self.record(
+            tmp_path, files=["cv.pdf", "changes.md"], coverage=self.DOC))
+        assert "required 1/2 (50%)" in note and "missing Kafka" in note
+
+    def test_a_sent_one_says_when_and_how_instead(self, tmp_path):
+        """Nothing is left to run, so the useful fact is the record of it."""
+        note = cli._application_note(self.record(
+            tmp_path, submitted_at="2026-09-06T10:00:00+00:00",
+            channel="linkedin"))
+        assert note == "submitted 2026-09-06 through linkedin"
+
+    def test_a_damaged_coverage_file_says_so_rather_than_crashing(self,
+                                                                  tmp_path):
+        note = cli._application_note(self.record(tmp_path,
+                                                 coverage="requirements: 7"))
+        assert "cannot be read" in note
+
+
+class TestTheTwoDetailScreensAreLaidOutTheSame:
+    """A vacancy and the application it became are the same thing at two
+    stages. Two helpers, one for each, drifted a character apart the first
+    time one of them was edited."""
+
+    def test_a_field_is_a_name_and_a_value(self):
+        assert cli._field("stage", "ready", "good") == \
+            [("  stage     ", "name"), ("ready", "good")]
+
+    def test_an_empty_field_is_no_line_at_all(self):
+        """A label with nothing after it is a question the screen cannot
+        answer, and a row of them is what a form looks like."""
+        assert cli._field("channel", None) is None
+        assert cli._field("channel", "") is None
+
+    def test_a_section_is_a_rule_with_its_name_in_it(self):
+        pieces = cli._section("checks")
+        assert [role for _, role in pieces] == ["rule", "name", "rule"]
+        assert "checks" in "".join(t for t, _ in pieces)

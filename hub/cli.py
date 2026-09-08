@@ -260,13 +260,9 @@ AGE_BANDS = (2, 30)
 
 
 def _fit_role(job) -> str:
-    """Traffic lights on the score, in the radar's bands."""
-    if job.score is None:
-        return "none"                      # not judged, rather than judged low
-    good, fair = FIT_BANDS
-    if job.score >= good:
-        return "good"
-    return "fair" if job.score >= fair else "poor"
+    """Traffic lights on the score, in the radar's bands. An unscored row is
+    dim: not judged, rather than judged low."""
+    return _score_role(job.score)
 
 
 def _age_role(job) -> str:
@@ -279,6 +275,50 @@ def _age_role(job) -> str:
     if days <= good:
         return "good"
     return "fair" if days <= fair else "poor"
+
+
+def _score_role(score) -> str:
+    """The radar's bands, wherever one of its scores is shown — the inbox and
+    the application it became are the same number and the same verdict."""
+    if score is None:
+        return "none"
+    good, fair = FIT_BANDS
+    if score >= good:
+        return "good"
+    return "fair" if score >= fair else "poor"
+
+
+def _stage_role(record: dict) -> str:
+    """What the stage is asking for.
+
+    Green is ready to send. Amber is unfinished — a step nobody has run yet.
+    Red is a check that ran and failed, which is a different thing from work
+    outstanding: the CV exists, it is just too long to send. Submitted is dim,
+    like every other row on these screens that is not asking for a decision.
+    """
+    stage, _ = _stage(record)
+    if stage == "submitted":
+        return "none"
+    if stage == "ready":
+        return "good"
+    return "poor" if stage.endswith("pages") else "fair"
+
+
+def _field(label: str, value, role: str = "cell") -> list | None:
+    """One labelled line: the label is a name, the value is what it is worth.
+
+    Shared by the two detail screens so a field cannot be laid out one way on
+    the vacancy and another on the application it became.
+    """
+    return [(f"  {label:<10}", "name"), (str(value), role)] if value else None
+
+
+def _section(title: str, width: int = 58) -> list[tuple[str, str]]:
+    """A rule with the name of what follows set into it, as under the list."""
+    lead = "──"
+    label = f" {title} "
+    return [("  " + lead, "rule"), (label, "name"),
+            ("─" * max(0, width - len(lead) - len(label)), "rule")]
 
 
 def _where_parts(job) -> list[tuple[str, str]]:
@@ -432,18 +472,6 @@ def _vacancy_screen(job_id: str, on_taken=None) -> None:
     # radar's prose. A screen where the label and its value are the same colour
     # is a screen you read twice — once to find the fields, once to read them.
     row = inbox_mod.Job.from_row(job)
-
-    def field(label, value, role="cell"):
-        if not value:
-            return None
-        return [(f"  {label:<9}", "name"), (str(value), role)]
-
-    def rule():
-        return [("  " + "─" * 58, "rule")]
-
-    def heading(text):
-        return [("  " + text, "name")]
-
     salary = ""
     lo, hi, cur = job.get("salary_min"), job.get("salary_max"), job.get("currency") or ""
     if lo or hi:
@@ -463,20 +491,20 @@ def _vacancy_screen(job_id: str, on_taken=None) -> None:
     fit = (f"{job.get('score')}/10" if job.get("score") is not None
            else "not scored yet — press s")
     lines = [line for line in [
-        field("fit", fit, _fit_role(row)),
-        field("found", age, _age_role(row)),
+        _field("fit", fit, _fit_role(row)),
+        _field("found", age, _age_role(row)),
         # The board's day, where it gave one, sits under the age rather than
         # replacing it: it is the coarser figure and it is often the later one.
-        field("posted", str(posted)[:10] if posted else "", "option"),
-        ([(f"  {'where':<9}", "name")] + _where_parts(row)
+        _field("posted", str(posted)[:10] if posted else "", "option"),
+        ([(f"  {'where':<10}", "name")] + _where_parts(row)
          if row.where else None),
-        field("pay", salary),
-        field("source", job.get("source"), "option"),
-        field("link", url, "option"),
+        _field("pay", salary),
+        _field("source", job.get("source"), "option"),
+        _field("link", url, "option"),
     ] if line]
 
     if job.get("eval_reason"):
-        lines += ["", heading("why the radar rated it")]
+        lines += ["", _section("why the radar rated it"), ""]
         lines += [[("    " + chunk, "hint")]
                   for chunk in _chunks(job["eval_reason"], 88)]
     if seen:
@@ -486,7 +514,7 @@ def _vacancy_screen(job_id: str, on_taken=None) -> None:
                        (", ".join(seen), "poor")]]
 
     body = (job.get("description") or "").strip()
-    lines += ["", rule(), ""]
+    lines += ["", _section("the posting"), ""]
     if body:
         for paragraph in re.split(r"\n\s*\n", body):
             lines += _chunks(" ".join(paragraph.split()), 92) + [""]
@@ -640,6 +668,13 @@ def _stage(record: dict) -> tuple[str, str]:
     Worked out from the folder rather than stored: a stage field would be a
     second truth to keep in step with the files that actually exist.
 
+    Held on the record once worked out. Two columns and the colour of one of
+    them ask for this, and answering meant opening the PDF to count its pages —
+    three times per row per keystroke, on every arrow key. The records are
+    re-read from disk after anything that changes a folder, which is when the
+    answer can change; `rebuild` drops it by hand because it changes one
+    without re-reading.
+
     A file existing is not the same as it being usable. One application read
     "ready" on a two-page CV that the page budget rejects, which is the kind
     of quiet wrongness that only shows up when someone tries to send it — so
@@ -648,6 +683,12 @@ def _stage(record: dict) -> tuple[str, str]:
     `jam` cannot run the next step itself — the deterministic half is not
     allowed to call a model (D21) — so it names it and you run it.
     """
+    if "_stage" not in record:
+        record["_stage"] = _work_out_stage(record)
+    return record["_stage"]
+
+
+def _work_out_stage(record: dict) -> tuple[str, str]:
     folder = record["_folder"]
     app_id = record.get("app_id")
     if record.get("submitted_at"):
@@ -666,29 +707,36 @@ def _stage(record: dict) -> tuple[str, str]:
     return "ready", f"/apply {app_id}"
 
 
-def _application_detail(record: dict) -> list[str]:
+def _application_detail(record: dict) -> list:
     folder = record["_folder"]
     files = sorted(p.name for p in folder.iterdir() if p.is_file())
     stage, action = _stage(record)
     score = record.get("radar_score")
-    lines = [
-        f"{record.get('company')} · {record.get('title')}",
+
+    # What to do about it first, because that is the question this screen is
+    # opened with; what it is second.
+    lines = [line for line in [
+        _field("stage", stage, _stage_role(record)),
+        _field("next", action, "hint"),
         "",
-        f"  id         {record.get('app_id')}",
-        f"  found via  {record.get('discovery')} · fit {score if score is not None else '-'}",
-        f"  channel    {record.get('channel')}",
-        f"  submitted  {record.get('submitted_at') or 'not yet'}",
-        f"  posting    {record.get('source_url')}",
-        "",
-        f"  files      {', '.join(files)}",
-    ]
-    if action:
-        lines += ["", f"  next       {action}"]
+        _field("fit", score if score is not None else "not scored",
+               _score_role(score)),
+        _field("found via", record.get("discovery"), "option"),
+        _field("channel", record.get("channel"), "option"),
+        _field("submitted", record.get("submitted_at") or "not yet",
+               "cell" if record.get("submitted_at") else "option"),
+        _field("posting", record.get("source_url"), "option"),
+        _field("files", ", ".join(files), "option"),
+    ] if line]
+
     lines += _detail_checks(folder)
     jd = folder / "jd.md"
     if jd.exists():
         text = " ".join(jd.read_text().split())
-        lines += ["", "  JD"] + [f"    {chunk}" for chunk in _chunks(text, 96)][:14]
+        # The posting itself, in the one colour on the screen that means the
+        # thing rather than something said about it.
+        lines += ["", _section("the posting"), ""]
+        lines += _chunks(text, 96)[:14]
     return lines
 
 
@@ -704,22 +752,32 @@ def _detail_checks(folder: Path) -> list[str]:
     if pdf.exists():
         pages = atscheck.page_count(pdf)
         budget = config.load().thresholds.cv_max_pages
-        verdict = "" if pages is None or pages <= budget else f" (over {budget})"
-        lines.append(f"  pages      {pages if pages else '?'}{verdict}")
+        over = pages is not None and pages > budget
+        lines.append(_field("pages", f"{pages if pages else '?'}"
+                            + (f" (over {budget})" if over else ""),
+                            "poor" if over else "good"))
     path = folder / "coverage.yaml"
     if path.exists():
         try:
             s = coverage.summarize(coverage.load(path))
         except (KeyError, TypeError, yaml.YAMLError):
-            lines.append("  coverage   unreadable")
+            lines.append(_field("coverage", "unreadable", "poor"))
         else:
             pct = f"{s.share:.0%}" if s.share is not None else "n/a"
-            lines.append(f"  coverage   required {s.required_covered:g}/"
-                         f"{s.required} ({pct}) · preferred "
-                         f"{s.preferred_covered:g}/{s.preferred}")
+            # Green when nothing required is uncovered, rather than at some
+            # percentage nobody chose: `missing` is the word the tailoring
+            # skill writes and the one `jam gaps` counts, so it is the line
+            # that decides. A missing requirement is work outstanding, not a
+            # failed check — the CV can still be sent with it.
+            lines.append(_field(
+                "coverage", f"required {s.required_covered:g}/{s.required} "
+                            f"({pct}) · preferred {s.preferred_covered:g}/"
+                            f"{s.preferred}",
+                "good" if not s.missing_required else "fair"))
             for text in (s.missing_required or [])[:6]:
-                lines.append(f"    missing  {text[:80]}")
-    return ["", *lines] if lines else []
+                lines.append([("    missing  ", "option"),
+                              (text[:80], "fair")])
+    return ["", _section("checks"), *lines] if lines else []
 
 
 def _chunks(text: str, width: int) -> list[str]:
@@ -742,14 +800,22 @@ def _list_applications(cfg) -> int:
                      "Take a vacancy from the inbox and it appears."],
                     title="applications")
         return 0
+    # The stage is what this screen is for, so it comes before the columns a
+    # narrow terminal drops. `next` is the screen telling you what to run, and
+    # is coloured as the screen talking rather than as data.
     columns = [
-        picker.Column("date", 10, lambda r: str(r.get("app_id", ""))[:10]),
+        picker.Column("date", 10, lambda r: str(r.get("app_id", ""))[:10],
+                      role=lambda r: "option"),
+        picker.Column("fit", 4, lambda r: str(r.get("radar_score") or "-"),
+                      right=True, role=lambda r: _score_role(r.get("radar_score"))),
+        picker.Column("stage", 12, lambda r: _stage(r)[0], role=_stage_role),
         picker.Column("company", 22, lambda r: r.get("company") or ""),
         picker.Column("title", 32, lambda r: r.get("title") or "", flex=True),
-        picker.Column("fit", 4, lambda r: str(r.get("radar_score") or "-"), right=True),
-        picker.Column("stage", 12, lambda r: _stage(r)[0]),
-        picker.Column("next", 30, lambda r: _stage(r)[1]),
     ]
+    # `next` used to be a column, and at 30 characters it was the first thing
+    # dropped on any terminal narrower than 140 — so the one cell that said
+    # what to run was the one nobody saw. It lives under the list now, where
+    # the whole command fits and the stage that prompted it can be explained.
     def delete(screen):
         """Deleting from the list is the common case: three of four rows in a
         list are usually ones you already know you do not want."""
@@ -767,8 +833,13 @@ def _list_applications(cfg) -> int:
     while True:
         chosen = picker.Picker(
             records, columns, title="applications",
-            search=lambda r: f"{r.get('company')} {r.get('title')}",
+            search=lambda r: (f"{r.get('company')} {r.get('title')} "
+                              f"{_stage(r)[0]}"),
             keys={24: ("^x delete", delete)},
+            # Under the list, the reason the stage says what it says: the page
+            # count that failed, the requirement nothing covers. The column has
+            # room for a verdict and none for what is behind it.
+            detail=_application_note, detail_label="where it stands",
         ).run()
         if chosen is None:
             return 0
@@ -777,6 +848,33 @@ def _list_applications(cfg) -> int:
         records = _applications(cfg)
         if not records:
             return 0
+
+
+def _application_note(record: dict) -> str:
+    """One line saying why the stage is what it is.
+
+    The stage column can hold one verdict — `2 pages`, `no coverage` — and a
+    verdict without its number sends you to another command to find out what
+    it meant.
+    """
+    stage, action = _stage(record)
+    if record.get("submitted_at"):
+        via = record.get("channel") or "an unrecorded channel"
+        return f"submitted {str(record['submitted_at'])[:10]} through {via}"
+    bits = [f"{stage} — run {action}" if action else stage]
+    path = record["_folder"] / "coverage.yaml"
+    if path.exists():
+        try:
+            s = coverage.summarize(coverage.load(path))
+        except (KeyError, TypeError, yaml.YAMLError):
+            bits.append("coverage.yaml cannot be read")
+        else:
+            pct = f" ({s.share:.0%})" if s.share is not None else ""
+            covered = f"required {s.required_covered:g}/{s.required}{pct}"
+            if s.missing_required:
+                covered += f", missing {'; '.join(s.missing_required[:3])}"
+            bits.append(covered)
+    return "  ·  ".join(bits)
 
 
 def _delete_application(record: dict, cfg) -> str:
@@ -811,13 +909,22 @@ def _application_screen(record: dict, cfg) -> None:
     count over budget, a claim the gate rejected.
     """
     folder = record["_folder"]
-    detail = picker.Detail(record.get("app_id", ""),
-                           _application_detail(record))
+    # Named like the vacancy screen: what it is at the top, the id and where it
+    # stands underneath, so the two screens are read the same way.
+    detail = picker.Detail(
+        f"{record.get('company')} · {record.get('title')}",
+        _application_detail(record),
+        subtitle=f"{record.get('app_id', '')}  ·  {_stage(record)[0]}")
 
     def rebuild() -> str:
         ok, lines = _rebuild(folder, cfg)
-        detail.lines = _application_detail(record) + ["", "  rebuild", *[
-            f"    {line}" for line in lines]]
+        # The stage is worked out from the folder, and the folder just changed.
+        record.pop("_stage", None)
+        detail.lines = (_application_detail(record)
+                        + ["", _section("rebuild"), ""]
+                        + [[("    " + line, "cell" if ok else "poor")]
+                           for line in lines])
+        detail.subtitle = f"{record.get('app_id', '')}  ·  {_stage(record)[0]}"
         return "rebuilt, passes" if ok else "rebuilt, does not pass"
 
     actions = [picker.Act("b", "rebuild cv", rebuild)]
