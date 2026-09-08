@@ -582,3 +582,186 @@ class TestConfirming:
         screen = self.screen(lambda s: "nothing selected")
         screen._key(24)
         assert screen.pending is None and screen.message == "nothing selected"
+
+
+class TestTheScreenSaysWhatEachThingIs:
+    """One colour for the whole bar left `age 48h 7d all sort priority fit`
+    reading as a single run of words, with nothing to say which of them is a
+    field, which is a value, and which is the sentence explaining both."""
+
+    def filters(self):
+        return [picker.Filter("age", [("48h", 2), ("7d", 7), ("all", None)],
+                              hints={"48h": "published in the last two days"}),
+                picker.Filter("sort", [("priority", "p"), ("fit", "s")])]
+
+    def screen(self, focus=0):
+        p = picker.Picker([], [], filters=self.filters())
+        p.focus = focus
+        return p
+
+    def roles(self, line):
+        return [role for _, role in line]
+
+    def test_a_field_is_named_and_its_values_are_not(self):
+        got = dict((text.strip(), role)
+                   for text, role in self.filters()[0].segments(False))
+        assert got["age"] == "name"
+        assert got["7d"] == "option" and got["all"] == "option"
+
+    def test_the_value_that_is_on_is_marked_apart_from_the_rest(self):
+        chosen = [role for text, role in self.filters()[0].segments(False)
+                  if "48h" in text]
+        assert chosen == ["current"]
+
+    def test_the_field_the_arrows_will_change_is_marked_further(self):
+        """Two fields both showing a chosen value, and only one of them is
+        what the next keypress edits."""
+        chosen = [role for text, role in self.filters()[0].segments(True)
+                  if "48h" in text]
+        assert chosen == ["focus"]
+
+    def test_the_brackets_stay_so_it_reads_without_colour(self):
+        assert "[48h]" in self.filters()[0].render(False)
+
+    def test_the_text_is_the_same_however_it_is_coloured(self):
+        """`render` is what the tests and any plain rendering use; the pieces
+        are what the screen draws. Two sources for one bar would drift."""
+        for focused in (True, False):
+            f = self.filters()[0]
+            assert f.render(focused) == "".join(t for t, _ in f.segments(focused))
+
+    def test_the_explanation_is_the_colour_the_radar_reasons_in(self):
+        """The hint and the triage reason under the list are the same kind of
+        writing — the screen talking, rather than the data."""
+        hint = self.screen().bar(100)[-2]
+        assert self.roles(hint)[-1] == "hint"
+        assert self.roles(hint)[0] == "name"
+
+    def test_the_fields_are_ruled_apart_and_not_only_coloured_apart(self):
+        """Three spaces between two fields left the eye finding the boundary
+        by reading the words. A terminal with no colour has only this."""
+        line = next(l for l in self.screen().bar(100) if len(l) > 3)
+        assert "rule" in self.roles(line)
+
+    def test_the_bar_is_ruled_off_from_the_list_above_it(self):
+        assert self.roles(self.screen().bar(100)[0]) == ["rule"]
+
+    def test_a_narrow_terminal_wraps_the_fields_rather_than_losing_them(self):
+        lines = self.screen().bar(30)
+        drawn = "".join(t for line in lines for t, _ in line)
+        assert "age" in drawn and "sort" in drawn
+
+    def test_the_keys_are_the_last_word_and_are_kept_quiet(self):
+        assert self.roles(self.screen().bar(100)[-1]) == ["keys"]
+
+
+class TestColourIsNotTheOnlyChannel:
+    """A terminal without colours, and anyone who cannot tell cyan from
+    magenta, still has to be able to work the bar."""
+
+    def test_without_colour_a_chosen_value_is_still_set_apart(self):
+        import curses
+        assert picker.style("current") == curses.A_BOLD
+        assert picker.style("option") == curses.A_DIM
+
+    def test_without_colour_the_focused_value_is_the_loudest(self):
+        import curses
+        assert picker.style("focus") == curses.A_REVERSE
+
+    def test_a_role_nobody_defined_draws_as_ordinary_text(self):
+        import curses
+        assert picker.style("nonsense") == curses.A_NORMAL
+
+
+class TestTrafficLights:
+    """A column of scores is read for which ones are high. Reading twenty of
+    them digit by digit is the slow way to do that."""
+
+    def rows(self):
+        class J:
+            def __init__(self, score, days):
+                self.score, self.age_days = score, days
+        return J
+
+    def test_a_column_with_no_opinion_draws_as_ordinary_text(self):
+        """Company and title mean nothing better or worse; colouring them
+        would be decoration, and decoration is what makes a screen unreadable."""
+        assert picker.Column("company", 8, str).role_of(object()) == "cell"
+
+    def test_a_column_with_one_asks_it_per_row(self):
+        column = picker.Column("fit", 4, str, role=lambda r: "good" if r else "poor")
+        assert column.role_of(True) == "good" and column.role_of(False) == "poor"
+
+
+class TestTheCursorIsNotLostToTheColours:
+    """Colouring the cells one at a time is what nearly ate the cursor: the
+    selected row is one highlight over the whole line, and the role for it has
+    to exist or the row draws as ordinary text with nothing marking it."""
+
+    def test_the_selected_row_has_a_style_of_its_own(self):
+        import curses
+        assert picker.style("selected") != curses.A_NORMAL
+
+    def test_it_survives_a_terminal_without_colour(self):
+        import curses
+        assert picker.style("selected") == curses.A_REVERSE
+
+
+class TestTheDetailScreenKeepsItsLayout:
+    """`_fold` rejoins words on single spaces, which is right for a paragraph
+    of a job description and wrong for a field: every line of the vacancy
+    screen was laid out as `fit         9.0/10` and drawn as `fit 9.0/10`."""
+
+    def test_a_laid_out_line_is_not_reflowed(self):
+        line = [("  fit      ", "name"), ("9.0/10", "good")]
+        d = picker.Detail("t", [line])
+        assert d.rows(80) == [line]
+
+    def test_prose_is_still_wrapped_to_the_screen(self):
+        d = picker.Detail("t", ["one two three four five six seven eight"])
+        assert len(d.rows(20)) > 1
+
+    def test_a_blank_line_stays_a_blank_line(self):
+        """The gaps are what separate one section from the next."""
+        assert picker.Detail("t", [""]).rows(80) == [[("", "cell")]]
+
+    def test_plain_text_carries_the_ordinary_role(self):
+        rows = picker.Detail("t", ["hello"]).rows(80)
+        assert rows == [[("hello", "cell")]]
+
+    def test_the_two_kinds_can_sit_in_one_screen(self):
+        """A vacancy is fields, then the radar's prose, then the posting."""
+        d = picker.Detail("t", [[("  fit      ", "name"), ("9.0", "good")],
+                                "", "a paragraph of the job description"])
+        roles = [role for line in d.rows(80) for _, role in line]
+        assert "name" in roles and "good" in roles and "cell" in roles
+
+
+class TestTheReasonUnderTheListIsNamed:
+    """A yellow paragraph appearing below a list of vacancies could be an
+    error, a note, or the start of the posting. A reader who has to work that
+    out for themselves generally works it out as noise."""
+
+    def screen(self, label=""):
+        return picker.Picker(ROWS, COLUMNS, detail=lambda r: "because",
+                             detail_label=label)
+
+    def test_the_name_sits_in_the_rule_that_was_already_there(self):
+        """No line of its own: the screen has none to spare, and the rule was
+        drawn under the list anyway."""
+        pieces = self.screen("why the radar rated it").detail_rule(60)
+        assert [role for _, role in pieces] == ["rule", "name", "rule"]
+        assert "why the radar rated it" in "".join(t for t, _ in pieces)
+
+    def test_the_rule_still_reaches_across(self):
+        assert len("".join(t for t, _ in
+                           self.screen("why").detail_rule(60))) == 60
+
+    def test_no_name_is_still_a_rule(self):
+        assert self.screen().detail_rule(20) == [("─" * 20, "rule")]
+
+    def test_a_name_wider_than_the_screen_does_not_wrap_the_line(self):
+        """A rule that folded onto a second line would push a vacancy off the
+        list to say something the reader already knew."""
+        pieces = self.screen("a very long label indeed").detail_rule(10)
+        assert "\n" not in "".join(t for t, _ in pieces)

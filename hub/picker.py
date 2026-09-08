@@ -27,6 +27,89 @@ def usable(stream=None) -> bool:
     return bool(getattr(stream, "isatty", lambda: False)()) and sys.stdin.isatty()
 
 
+#: What the screen is made of, and what each kind of thing looks like.
+#:
+#: Four kinds, and the rule is what a piece of text *is*, never where it sits:
+#:
+#:   name      what something is called — the screen's title, a column header,
+#:             a filter's field. Cyan.
+#:   current   a value that is switched on right now. Magenta, and bracketed
+#:             as well, so it survives a terminal with no colour.
+#:   option    a value that is available and not chosen. Dim.
+#:   hint      prose explaining the thing above it. Yellow — the same yellow as
+#:             the radar's reasoning under the list, because it is the same
+#:             kind of writing: the screen talking rather than the data.
+#:
+#: One colour for the lot is what this replaces: `age 48h 7d all sort priority`
+#: read as one run of words with no way to tell a question from an answer.
+_PAIRS = {"selected": 1, "name": 2, "hint": 3, "current": 4,
+          "good": 5, "poor": 6, "remote": 7}
+_ROLES = {
+    #: The row the cursor is on, and the yes/no bar, which take a whole line.
+    "selected": lambda: curses.color_pair(1),
+    "mark": lambda: curses.color_pair(2) | curses.A_BOLD,
+    "name": lambda: curses.color_pair(2) | curses.A_BOLD,
+    "header": lambda: curses.color_pair(2) | curses.A_DIM,
+    "current": lambda: curses.color_pair(4) | curses.A_BOLD,
+    #: The current value of the field the arrows are pointing at, which is the
+    #: one thing on the bar a keypress will change.
+    "focus": lambda: curses.color_pair(1) | curses.A_BOLD,
+    "option": lambda: curses.A_DIM,
+    "hint": lambda: curses.color_pair(3),
+    "keys": lambda: curses.A_DIM,
+    "gap": lambda: curses.A_NORMAL,
+    "cell": lambda: curses.A_NORMAL,
+    #: Traffic lights, for the columns where a number means better or worse.
+    #: Bold rather than another hue for the good end: on a dark terminal green
+    #: is the quietest of the three, and it is the one worth spotting.
+    "good": lambda: curses.color_pair(5) | curses.A_BOLD,
+    "fair": lambda: curses.color_pair(3),
+    "poor": lambda: curses.color_pair(6),
+    "none": lambda: curses.A_DIM,
+    #: Not a traffic light: remote is neither good nor bad, it is a different
+    #: kind of fact from the place beside it, so it gets a colour of its own
+    #: rather than a brighter or dimmer version of the location's.
+    "remote": lambda: curses.color_pair(7),
+    #: The lines and separators that do the same work as the colours, for a
+    #: terminal that has none and for anyone who reads shape faster than hue.
+    "rule": lambda: curses.A_DIM,
+}
+
+
+def start_colours() -> None:
+    """Sets the pairs up if the terminal has any."""
+    if not curses.has_colors():
+        return
+    curses.use_default_colors()
+    curses.init_pair(_PAIRS["selected"], curses.COLOR_BLACK, curses.COLOR_CYAN)
+    curses.init_pair(_PAIRS["name"], curses.COLOR_CYAN, -1)
+    curses.init_pair(_PAIRS["hint"], curses.COLOR_YELLOW, -1)
+    curses.init_pair(_PAIRS["current"], curses.COLOR_MAGENTA, -1)
+    curses.init_pair(_PAIRS["good"], curses.COLOR_GREEN, -1)
+    curses.init_pair(_PAIRS["poor"], curses.COLOR_RED, -1)
+    curses.init_pair(_PAIRS["remote"], curses.COLOR_BLUE, -1)
+
+
+def style(role: str) -> int:
+    """The attribute for one kind of text.
+
+    Without colour the roles collapse onto bold and dim, which still separates
+    a chosen value from the rest — the brackets do the rest of the work.
+    """
+    try:
+        coloured = curses.has_colors()
+    except curses.error:
+        coloured = False               # asked before a screen exists, in a test
+    if not coloured:
+        return {"current": curses.A_BOLD, "focus": curses.A_REVERSE,
+                "selected": curses.A_REVERSE,
+                "name": curses.A_BOLD, "good": curses.A_BOLD}.get(
+            role, curses.A_DIM
+            if role in ("option", "keys", "hint", "rule", "none")
+            else curses.A_NORMAL)
+    return _ROLES.get(role, lambda: curses.A_NORMAL)()
+
+
 @dataclass
 class Ask:
     """What a key handler returns when it must not act on one keystroke.
@@ -47,11 +130,37 @@ class Column:
     right: bool = False
     #: Give this column whatever width is left over. At most one per set.
     flex: bool = False
+    #: What this cell is worth, as a role name, for a column whose numbers
+    #: mean better and worse. A list of scores is read for which ones are high,
+    #: and reading twenty of them digit by digit is the slow way to do it.
+    role: Callable[[object], str] | None = None
+    #: For a cell that is not all one thing: returns (text, role) pieces. A
+    #: location reading `remote · London` is two facts, and only one of them is
+    #: the place.
+    parts: Callable[[object], list[tuple[str, str]]] | None = None
+
+    def role_of(self, row: object) -> str:
+        return self.role(row) if self.role else "cell"
+
+    def pieces(self, row: object, width: int | None = None) -> list[tuple[str, str]]:
+        """The cell as (text, role) pieces, cut and padded to the width."""
+        width = self.width if width is None else width
+        parts = (self.parts(row) if self.parts
+                 else [(str(self.value(row)), self.role_of(row))])
+        out, used = [], 0
+        for text, role in parts:
+            if used >= width:
+                break
+            text = str(text)[: width - used]
+            out.append((text, role))
+            used += len(text)
+        if (pad := width - used) > 0:
+            out.insert(0 if self.right else len(out), (" " * pad, "cell"))
+        return out
 
     def render(self, row: object, width: int | None = None) -> str:
-        width = self.width if width is None else width
-        text = str(self.value(row))[:width]
-        return text.rjust(width) if self.right else text.ljust(width)
+        """The same cell as plain text, so the two cannot drift apart."""
+        return "".join(text for text, _ in self.pieces(row, width))
 
 
 def fit(columns: Sequence[Column], available: int) -> list[tuple[Column, int]]:
@@ -89,6 +198,7 @@ class Picker:
     def __init__(self, rows: Sequence, columns: Sequence[Column],
                  title: str = "", search: Callable[[object], str] | None = None,
                  detail: Callable[[object], str] | None = None,
+                 detail_label: str = "",
                  deep: Callable[[str], Sequence] | None = None,
                  deep_label: str = "deep search",
                  filterable: bool = True,
@@ -119,6 +229,11 @@ class Picker:
         # because it combines with them rather than replacing them.
         self.gate = gate
         self.extra_label = extra_label
+        # What the text under the list is. A yellow paragraph appearing below
+        # a list of vacancies could be anything — an error, a note, the start
+        # of the posting — and a reader who has to work that out for themselves
+        # generally works it out as noise and stops looking.
+        self.detail_label = detail_label
         # A bar rather than a key per filter: the radar's dashboard puts them
         # behind one control with a count, and a screen with six control keys
         # is one nobody remembers.
@@ -187,11 +302,7 @@ class Picker:
 
     def _loop(self, screen):
         curses.curs_set(0)
-        if curses.has_colors():
-            curses.use_default_colors()
-            curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)
-            curses.init_pair(2, curses.COLOR_CYAN, -1)
-            curses.init_pair(3, curses.COLOR_YELLOW, -1)
+        start_colours()
         while True:
             self._draw(screen)
             result = self._key(self.read_key(screen))
@@ -218,27 +329,65 @@ class Picker:
             return None
         return False
 
-    def _draw_filters(self, screen, height: int, width: int) -> int:
-        """Returns how many lines the bar took."""
-        rendered = [f.render(i == self.focus) for i, f in enumerate(self.filters)]
-        lines, current = [], ""
-        for chunk in rendered:
-            if len(current) + len(chunk) + 3 > width - 4:
+    def bar(self, width: int) -> list[list[tuple[str, str]]]:
+        """The filter bar as lines of (text, role) pieces, wrapped to fit.
+
+        Text and role rather than text alone because one colour for the whole
+        bar made a field, its values and the line explaining them read as a
+        single sentence: `age 48h 7d all sort priority fit` says nothing about
+        which of those words is a question and which is an answer.
+        """
+        # A rule between the fields as well as a colour, and one across the top
+        # of the bar. Colour alone leaves the same wall of words on a terminal
+        # without it, and where three spaces separated two fields the eye had
+        # to find the boundary by reading the words.
+        gap = "  │ "
+        lines, current, used = [[("─" * max(0, width - 4), "rule")]], [], 0
+        for i, f in enumerate(self.filters):
+            chunk = f.segments(i == self.focus)
+            wide = sum(len(text) for text, _ in chunk)
+            if current and used + wide + len(gap) > width - 4:
                 lines.append(current)
-                current = chunk
+                current, used = list(chunk), wide
             else:
-                current = f"{current}   {chunk}".strip()
+                if current:
+                    current.append((gap, "rule"))
+                    used += len(gap)
+                current += chunk
+                used += wide
         if current:
             lines.append(current)
         focused = self.filters[self.focus]
         if focused.hint:
-            lines.append(f"{focused.name} · {focused.label} — {focused.hint}")
-        lines.append("←→ field · ↑↓ value · esc close")
+            # Named the same way it is drawn above, so the line explaining a
+            # value points at it by colour as well as by word.
+            lines.append([(focused.name, "name"), (" · ", "gap"),
+                          (focused.label, "current"), (" — ", "gap"),
+                          (focused.hint, "hint")])
+        lines.append([("←→ field · ↑↓ value · esc close", "keys")])
+        return lines
+
+    def _draw_filters(self, screen, height: int, width: int) -> int:
+        """Returns how many lines the bar took."""
+        lines = self.bar(width)
         for i, line in enumerate(lines):
-            style = curses.A_DIM if i == len(lines) - 1 else curses.color_pair(2)
-            screen.addnstr(height - 1 - len(lines) + i, 2, line[: width - 3],
-                           width - 3, style)
+            y, x = height - 1 - len(lines) + i, 2
+            for text, role in line:
+                room = width - 3 - x
+                if room <= 0:
+                    break
+                screen.addnstr(y, x, text[:room], room, style(role))
+                x += len(text)
         return len(lines)
+
+    def detail_rule(self, width: int) -> list[tuple[str, str]]:
+        """The rule under the list, with the label set into it."""
+        if not self.detail_label:
+            return [("─" * max(0, width), "rule")]
+        label = f" {self.detail_label} "
+        lead = "──"
+        tail = "─" * max(0, width - len(lead) - len(label))
+        return [(lead, "rule"), (label, "name"), (tail, "rule")]
 
     def _deepen(self) -> None:
         self.deep_query = self.query
@@ -256,41 +405,73 @@ class Picker:
         rows = self.rows
         bar = self._draw_filters(screen, height, width) if self.filters_open else 0
         # Two lines of chrome at the top, two at the bottom.
-        body = max(1, height - 5 - bar - (3 if self.detail else 0))
+        body = max(1, height - 5 - bar - (4 if self.detail else 0))
         self.cursor = max(0, min(self.cursor, len(rows) - 1)) if rows else 0
         self.top = max(min(self.top, self.cursor), self.cursor - body + 1, 0)
 
         layout = fit(self.columns, width - 3)
-        head = f"{self.title}   {len(rows)} of {len(self.all)}"
+        # The title line is the screen's name and then the state it is in, and
+        # the two are coloured apart for the same reason the bar is: a count
+        # and a filter are answers, not part of what the screen is called.
+        title = [(self.title, "name"), (f"   {len(rows)} of {len(self.all)}",
+                                        "current")]
         if self.searching:
-            head += f"   {self.deep_label}: {self.deep_query}"
-        active = [f.summary() for f in self.filters if f.summary()]
-        if active:
-            head += "   " + " · ".join(active)
+            title.append((f"   {self.deep_label}: {self.deep_query}", "current"))
+        for summary in (f.summary() for f in self.filters):
+            if summary:
+                title.append((f"   {summary}", "current"))
         if self.extra_label and (extra := self.extra_label(self)):
-            head += f"   [{extra}]"
+            title.append((f"   [{extra}]", "current"))
         if self.query:
-            head += f"   /{self.query}"
-        screen.addnstr(0, 0, head, width - 1, curses.color_pair(2) | curses.A_BOLD)
+            title.append((f"   /{self.query}", "current"))
+        x = 0
+        for text, role in title:
+            if (room := width - 1 - x) <= 0:
+                break
+            screen.addnstr(0, x, text[:room], room, style(role))
+            x += len(text)
 
+        # Column names are names, like the fields on the filter bar, and are
+        # coloured as such: the row under them is the vacancy, not a label.
         header = "  " + " ".join(c.header.ljust(w)[:w] for c, w in layout)
-        screen.addnstr(1, 0, header, width - 1, curses.A_DIM)
+        screen.addnstr(1, 0, header, width - 1, style("header"))
 
         for i, row in enumerate(rows[self.top:self.top + body]):
-            line = "  " + " ".join(c.render(row, w) for c, w in layout)
-            selected = self.top + i == self.cursor
-            screen.addnstr(2 + i, 0, line.ljust(width - 1)[: width - 1],
-                           width - 1,
-                           curses.color_pair(1) if selected else curses.A_NORMAL)
+            if self.top + i == self.cursor:
+                # The cursor takes the whole line: a row painted three colours
+                # under a highlight reads as damage rather than as selection.
+                line = "  " + " ".join(c.render(row, w) for c, w in layout)
+                screen.addnstr(2 + i, 0, line.ljust(width - 1)[: width - 1],
+                               width - 1, style("selected"))
+                continue
+            x = 2
+            for column, w in layout:
+                for text, role in column.pieces(row, w):
+                    if (room := width - 1 - x) <= 0:
+                        break
+                    screen.addnstr(2 + i, x, text[:room], room, style(role))
+                    x += len(text)
+                x += 1                             # the gap between columns
 
         if self.message:
             screen.addnstr(height - 2, 2, self.message[: width - 3], width - 3,
-                           curses.color_pair(3) | curses.A_BOLD)
+                           style("hint") | curses.A_BOLD)
         elif self.detail and rows:
+            # The radar's reasoning, and the yellow the filter hints borrow:
+            # both are the screen explaining itself rather than listing data.
+            # Ruled off from the list for the same reason the bar is — it sits
+            # under the rows and is about one of them, not another of them —
+            # and the rule carries the name of what is below it, which costs no
+            # line of a screen that has none to spare.
+            x = 2
+            for text, role in self.detail_rule(width - 4):
+                if (room := width - 3 - x) <= 0:
+                    break
+                screen.addnstr(2 + body, x, text[:room], room, style(role))
+                x += len(text)
             text = self.detail(rows[self.cursor]) or ""
             for j, chunk in enumerate(_wrap(text, width - 3, 2)):
-                screen.addnstr(2 + body + j, 2, chunk, width - 3,
-                               curses.color_pair(3))
+                screen.addnstr(3 + body + j, 2, chunk, width - 3, style("hint"))
 
         # Kept terse because it has to survive an 80-column terminal; the
         # current sort and filters are shown in the title instead of here.
@@ -448,12 +629,24 @@ class Filter:
         """Shown in the title only when it is not the default."""
         return "" if self.index == 0 else f"{self.name}: {self.label}"
 
-    def render(self, focused: bool) -> str:
-        out = [f"{self.name} "]
+    def segments(self, focused: bool) -> list[tuple[str, str]]:
+        """The control in pieces, each saying what it is: the field's name,
+        then its options with the current one marked.
+
+        Brackets as well as colour. A terminal with no colours, or a reader who
+        cannot tell two of them apart, still has to see which value is on.
+        """
+        out = [("▸" if focused else " ", "mark"), (f"{self.name} ", "name")]
         for i, (label, _) in enumerate(self.options):
-            out.append(f"[{label}]" if i == self.index else f" {label} ")
-        line = "".join(out)
-        return f"▸{line}" if focused else f" {line}"
+            if i == self.index:
+                out.append((f"[{label}]", "focus" if focused else "current"))
+            else:
+                out.append((f" {label} ", "option"))
+        return out
+
+    def render(self, focused: bool) -> str:
+        """The same bar as plain text, so the two cannot drift apart."""
+        return "".join(text for text, _ in self.segments(focused))
 
 
 @dataclass
@@ -482,7 +675,7 @@ class Detail:
     because there is nothing to filter.
     """
 
-    def __init__(self, title: str, lines: Sequence[str],
+    def __init__(self, title: str, lines: Sequence,
                  actions: Sequence[Act] = (), subtitle: str = ""):
         self.title = title
         self.subtitle = subtitle
@@ -497,48 +690,73 @@ class Detail:
 
     def _loop(self, screen):
         curses.curs_set(0)
-        if curses.has_colors():
-            curses.use_default_colors()
-            curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)
-            curses.init_pair(2, curses.COLOR_CYAN, -1)
-            curses.init_pair(3, curses.COLOR_YELLOW, -1)
+        start_colours()
         while True:
             self._draw(screen)
             if self._key(Picker.read_key(screen)) is None:
                 return
 
+    def rows(self, width: int) -> list[list[tuple[str, str]]]:
+        """The body as lines of (text, role) pieces.
+
+        A plain string is prose and gets wrapped to the screen. A line already
+        in pieces is laid out — a label and its value, one under the next — and
+        is passed through untouched. Wrapping ran over both before, and since
+        it rejoins on single spaces it quietly turned `fit         8.0/10` into
+        `fit 8.0/10`: every field on the vacancy screen lost its column.
+        """
+        out = []
+        for line in self.lines:
+            if isinstance(line, str):
+                out += [[(chunk, "cell")] for chunk in (_fold(line, width) or [""])]
+            else:
+                out.append(list(line))
+        return out
+
     def _draw(self, screen):
         screen.erase()
         height, width = screen.getmaxyx()
         body = max(1, height - 5)
-        wrapped = []
-        for line in self.lines:
-            wrapped += _fold(line, width - 4) or [""]
-        self.top = max(0, min(self.top, max(0, len(wrapped) - body)))
+        rows = self.rows(width - 4)
+        self.top = max(0, min(self.top, max(0, len(rows) - body)))
 
-        screen.addnstr(0, 0, self.title[: width - 1], width - 1,
-                       curses.color_pair(2) | curses.A_BOLD)
+        screen.addnstr(0, 0, self.title[: width - 1], width - 1, style("name"))
         if self.subtitle:
-            screen.addnstr(1, 0, "  " + self.subtitle, width - 1, curses.A_DIM)
-        for i, line in enumerate(wrapped[self.top:self.top + body]):
-            screen.addnstr(2 + i, 2, line, width - 3)
+            screen.addnstr(1, 0, "  " + self.subtitle, width - 1, style("keys"))
+        for i, line in enumerate(rows[self.top:self.top + body]):
+            x = 2
+            for text, role in line:
+                if (room := width - 1 - x) <= 0:
+                    break
+                screen.addnstr(2 + i, x, text[:room], room, style(role))
+                x += len(text)
 
-        if len(wrapped) > body:
-            pos = f"{self.top + 1}-{min(self.top + body, len(wrapped))} of {len(wrapped)}"
-            screen.addnstr(height - 3, 2, pos, width - 3, curses.A_DIM)
+        if len(rows) > body:
+            pos = f"{self.top + 1}-{min(self.top + body, len(rows))} of {len(rows)}"
+            screen.addnstr(height - 3, 2, pos, width - 3, style("keys"))
         if self.message:
             screen.addnstr(height - 2, 2, self.message[: width - 3], width - 3,
-                           curses.color_pair(3))
+                           style("hint"))
 
         if self.pending:
             bar = f"  {self.pending.confirm}   [y] yes   [n] no"
-            style = curses.color_pair(1)
+            screen.addnstr(height - 1, 0, bar.ljust(width - 1)[: width - 1],
+                           width - 1, style("selected"))
         else:
-            bar = "  ↑↓ scroll" + "".join(
-                f"   [{a.key}] {a.label}" for a in self.actions) + "   esc back"
-            style = curses.A_DIM
-        screen.addnstr(height - 1, 0, bar.ljust(width - 1)[: width - 1],
-                       width - 1, style)
+            # The keys are what someone is looking for on this bar, so they are
+            # the part that is coloured; the words are what the key means.
+            bar = [("  ↑↓ scroll", "keys")]
+            for a in self.actions:
+                bar += [(f"   [{a.key}]", "current"), (f" {a.label}", "keys")]
+            bar.append(("   esc back", "keys"))
+            x = 0
+            screen.addnstr(height - 1, 0, " " * (width - 1), width - 1,
+                           curses.A_NORMAL)
+            for text, role in bar:
+                if (room := width - 1 - x) <= 0:
+                    break
+                screen.addnstr(height - 1, x, text[:room], room, style(role))
+                x += len(text)
         screen.refresh()
 
     def _key(self, key):
